@@ -203,6 +203,30 @@ function create_repository(PDO $db): RepeatCallerRepository {
 	return new RepeatCallerRepository($db);
 }
 
+function collect_cursor_pages(callable $loadPage, string $label): array {
+	$cursor = null;
+	$rows = [];
+	$pageCount = 0;
+	$lastHasMore = true;
+	do {
+		$page = $loadPage($cursor);
+		assert_true(count($page['rows']) <= 15, $label . ' page must return at most 15 rows');
+		$pageCount++;
+		foreach ($page['rows'] as $row) {
+			$rows[] = $row;
+		}
+		$cursor = $page['nextCursor'];
+		$hasMore = $page['hasMore'];
+		$lastHasMore = $hasMore;
+		if ($hasMore) {
+			assert_true(is_array($cursor), $label . ' page with hasMore must provide a continuation cursor');
+		}
+	} while ($hasMore);
+	assert_true($pageCount > 1, $label . ' fixture must traverse more than one page');
+	assert_same(false, $lastHasMore, $label . ' must report exhaustion through hasMore=false');
+	return $rows;
+}
+
 $dbPath = tempnam(sys_get_temp_dir(), 'repeatcaller_repo_');
 if ($dbPath === false) {
 	throw new RuntimeException('Unable to create temporary SQLite file');
@@ -1182,6 +1206,61 @@ try {
 	$repo->acceptActiveIncident($followupIncidentId, 'qa', '2026-07-13 12:21:10', 'gui');
 	$deliverableAfterAccept = $repo->loadDeliverableCallAlertByHistoryId($pendingHistoryId, '2026-07-13 12:21:11');
 	assert_true($deliverableAfterAccept === null, 'single-row deliverable lookup should stop once incident is no longer active');
+
+	$pageDb = new PDO('sqlite::memory:');
+	$pageRepo = create_repository($pageDb);
+	$pageDb->prepare('INSERT INTO repeatcaller_rules (name, enabled, mode, threshold_count, observation_window_minutes, caller_mode, exclude_withheld, did_scope_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+		->execute(['Pagination Rule', 1, 'repeat', 2, 60, 'any', 0, 'all']);
+	$pageRuleId = (int)$pageDb->lastInsertId();
+	$insertPageIncident = $pageDb->prepare('INSERT INTO repeatcaller_incidents (rule_id, subject_key, subject_label, mode, first_matched_at, last_matched_at, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+	$activeIncidentIds = [];
+	$acceptedIncidentIds = [];
+	for ($index = 1; $index <= 321; $index++) {
+		$updatedAt = $index <= 305 ? '2026-10-01 12:00:00' : null;
+		$insertPageIncident->execute([$pageRuleId, 'active-page-' . $index, 'active-page-' . $index, 'repeat', '2026-10-01 11:00:00', '2026-10-01 11:00:00', 'active', '2026-10-01 11:00:00', $updatedAt]);
+		$activeIncidentIds[] = (int)$pageDb->lastInsertId();
+		$insertPageIncident->execute([$pageRuleId, 'accepted-page-' . $index, 'accepted-page-' . $index, 'repeat', '2026-10-01 11:00:00', '2026-10-01 11:00:00', 'accepted', '2026-10-01 11:00:00', '2026-10-01 12:00:00']);
+		$acceptedIncidentIds[] = (int)$pageDb->lastInsertId();
+	}
+	$activePages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
+		return $pageRepo->loadIncidentsPage('active', $cursor, 15);
+	}, 'active incident');
+	$expectedActiveIds = array_merge(array_reverse(array_slice($activeIncidentIds, 0, 305)), array_reverse(array_slice($activeIncidentIds, 305)));
+	assert_same(321, count($activePages), 'active incident pagination must continue beyond the former 300-row cap');
+	assert_same($expectedActiveIds, array_map(static function (array $row): int { return (int)$row['id']; }, $activePages), 'active cursor pages must preserve timestamp/ID ordering, including the null updated_at tail');
+	assert_same(321, count(array_unique(array_column($activePages, 'id'))), 'active cursor pages must not duplicate records across equal-timestamp boundaries');
+	$acceptedPages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
+		return $pageRepo->loadIncidentsPage('accepted', $cursor, 15);
+	}, 'accepted incident');
+	assert_same(array_reverse($acceptedIncidentIds), array_map(static function (array $row): int { return (int)$row['id']; }, $acceptedPages), 'accepted cursor pages must preserve state filtering and updated_at/ID ordering');
+	$oversizedPage = $pageRepo->loadIncidentsPage('active', null, 1000);
+	assert_same(15, count($oversizedPage['rows']), 'incident page size must be clamped to 15 regardless of the requested size');
+
+	$insertPageHistory = $pageDb->prepare('INSERT INTO repeatcaller_incident_alert_history (incident_id, rule_id, subject_key, subject_label, action_type, event_type, delivery_status, alert_reminder_mode, dedupe_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+	$alertHistoryIds = [];
+	for ($index = 1; $index <= 321; $index++) {
+		$insertPageHistory->execute([1, $pageRuleId, 'history-page-' . $index, 'history-page-' . $index, 'gui', 'initial', 'recorded', 'never', 'page-history-' . $index, '2026-10-01 12:00:00', '2026-10-01 12:00:00']);
+		$alertHistoryIds[] = (int)$pageDb->lastInsertId();
+	}
+	$historyPages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
+		return $pageRepo->loadIncidentAlertHistoryPage($cursor, 15);
+	}, 'alert history');
+	assert_same(array_reverse($alertHistoryIds), array_map(static function (array $row): int { return (int)$row['id']; }, $historyPages), 'alert-history cursor pages must not skip or duplicate rows with equal timestamps');
+	assert_true(!$pageRepo->loadIncidentAlertHistoryPage(['time' => '2026-10-01 12:00:00', 'id' => min($alertHistoryIds)], 15)['hasMore'], 'alert-history hasMore must become false at exhaustion');
+
+	$insertPageSuppression = $pageDb->prepare('INSERT INTO repeatcaller_incident_suppression_history (related_incident_id, rule_id, rule_name, mode, subject_key, subject_label, matched_call_count, threshold_count, observation_window_minutes, suppression_source, suppression_minutes, suppression_started_at, suppression_expires_at, related_incident_state, detected_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+	$suppressionIds = [];
+	for ($index = 1; $index <= 321; $index++) {
+		$insertPageSuppression->execute([$index, $pageRuleId, 'Pagination Rule', 'repeat', 'suppression-page-' . $index, 'suppression-page-' . $index, 2, 2, 60, 'suppression', 60, '2026-10-01 11:00:00', '2026-10-02 11:00:00', 'active', '2026-10-01 12:00:00', '2026-10-01 12:00:00', '2026-10-01 12:00:00']);
+		$suppressionIds[] = (int)$pageDb->lastInsertId();
+	}
+	$insertPageSuppression->execute([322, $pageRuleId, 'Pagination Rule', 'repeat', 'cleared-page', 'cleared-page', 2, 2, 60, 'suppression', 60, '2026-10-01 11:00:00', '2026-10-02 11:00:00', 'active', '2026-10-01 12:00:00', '2026-10-01 12:01:00', '2026-10-01 12:01:00']);
+	$pageDb->exec("UPDATE repeatcaller_incident_suppression_history SET cleared_at = '2026-10-01 12:02:00' WHERE subject_key = 'cleared-page'");
+	$insertPageSuppression->execute([323, $pageRuleId, 'Pagination Rule', 'repeat', 'expired-page', 'expired-page', 2, 2, 60, 'suppression', 60, '2026-10-01 10:00:00', '2026-10-01 11:00:00', 'active', '2026-10-01 10:00:00', '2026-10-01 12:02:00', '2026-10-01 12:02:00']);
+	$suppressionPages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
+		return $pageRepo->loadActiveSuppressedIncidentsPage('2026-10-01 12:00:00', $cursor, 15);
+	}, 'active suppression');
+	assert_same(array_reverse($suppressionIds), array_map(static function (array $row): int { return (int)$row['id']; }, $suppressionPages), 'suppression pagination must preserve active/uncleared filtering and created_at/ID order');
 	unset($repo, $db);
 
 	$dbReloaded = new PDO('sqlite:' . $dbPath);

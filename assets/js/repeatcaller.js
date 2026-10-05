@@ -35,6 +35,8 @@
 	var currentEngineLastSuccessfulRun = '';
 	var tableBatchSize = 15;
 	var tableBatchStates = {};
+	var tablePageStates = {};
+	var tablePageGeneration = {};
 	var tableBatchSelectors = [
 		'#rc-rules-table',
 		'#rc-active-incidents-table',
@@ -830,6 +832,13 @@
 		return tableBatchStates[selector];
 	}
 
+	function ensureTablePageState(selector) {
+		if (!tablePageStates[selector]) {
+			tablePageStates[selector] = {cursor: null, hasMore: false, loading: false, asOf: null};
+		}
+		return tablePageStates[selector];
+	}
+
 	function tableBatchUnitsFromRows($rows, unitSize) {
 		var units = [];
 		var idx;
@@ -875,9 +884,10 @@
 		}
 		var state = ensureTableBatchState(selector);
 		var unitSize = tableBatchUnitSize(selector);
-		var $rows = $table.find('tbody > tr');
+		var $rows = $table.find('tbody tr');
 		var hasEmptyStateOnly = $rows.length === 1 && $rows.first().hasClass('rc-empty-state');
 		var $controls = tableBatchControlsContainer($table);
+		var pageState = tablePageStates[selector] || null;
 
 		if (!$rows.length || hasEmptyStateOnly) {
 			$rows.show();
@@ -894,7 +904,9 @@
 			state.visibleUnits = tableBatchSize;
 			$rows.show();
 			if ($controls.length) {
-				$controls.hide();
+				$controls.find('.rc-table-show-more').toggle(!!pageState && pageState.hasMore).prop('disabled', !!pageState && pageState.loading);
+				$controls.find('.rc-table-show-less').hide();
+				$controls.toggle(!!pageState && pageState.hasMore);
 			}
 			return;
 		}
@@ -911,7 +923,7 @@
 		});
 
 		if ($controls.length) {
-			$controls.find('.rc-table-show-more').toggle(state.visibleUnits < totalUnits);
+			$controls.find('.rc-table-show-more').toggle(state.visibleUnits < totalUnits || (!!pageState && pageState.hasMore)).prop('disabled', !!pageState && pageState.loading);
 			$controls.find('.rc-table-show-less').toggle(state.visibleUnits > tableBatchSize);
 			$controls.show();
 		}
@@ -921,6 +933,123 @@
 		$.each(tableBatchSelectors, function (_, selector) {
 			updateTableRowBatching(selector);
 		});
+	}
+
+	function pagedTableConfig(selector) {
+		if (selector === '#rc-active-incidents-table') {
+			return {
+				command: 'getincidents',
+				payload: {view: 'active'},
+				rowsKey: 'incidents',
+				render: function (rows, append) { renderIncidents(selector, rows, true, append); }
+			};
+		}
+		if (selector === '#rc-recent-incidents-table') {
+			return {
+				command: 'getincidents',
+				payload: {view: 'accepted'},
+				rowsKey: 'incidents',
+				render: function (rows, append) { renderIncidents(selector, rows, false, append); }
+			};
+		}
+		if (selector === '#rc-suppressed-incidents-table') {
+			return {
+				command: 'getsuppressedincidents',
+				payload: {},
+				rowsKey: 'suppressedIncidents',
+				signedCursor: true,
+				tokenKey: 'nextCursorToken',
+				render: function (rows, append) { renderSuppressedIncidents(rows, append); }
+			};
+		}
+		if (selector === '#rc-alert-history-table') {
+			return {
+				command: 'getalerthistory',
+				payload: {},
+				rowsKey: 'alertHistory',
+				render: function (rows, append) { renderAlertHistory(rows, append); }
+			};
+		}
+		return null;
+	}
+
+	function requestTablePage(selector, append, options) {
+		var config = pagedTableConfig(selector);
+		if (!config) {
+			return null;
+		}
+		var page = ensureTablePageState(selector);
+		if (page.loading || (append && !page.hasMore)) {
+			return null;
+		}
+		page.loading = true;
+		var generation = tablePageGeneration[selector] || 0;
+		updateTableRowBatching(selector);
+		var payload = {};
+		$.each(config.payload, function (key, value) { payload[key] = value; });
+		if (config.signedCursor && page.cursorToken) {
+			payload.cursor_token = page.cursorToken;
+		} else if (page.cursor) {
+			payload.cursor_time = page.cursor.time === null ? '' : page.cursor.time;
+			payload.cursor_id = page.cursor.id;
+		}
+		return ajax(config.command, payload, function (response) {
+			if (generation !== (tablePageGeneration[selector] || 0) || tablePageStates[selector] !== page) {
+				return;
+			}
+			var rows = $.isArray(response[config.rowsKey]) ? response[config.rowsKey] : [];
+			if (append && (selector === '#rc-active-incidents-table' || selector === '#rc-recent-incidents-table')) {
+				var existingIds = {};
+				$.each(selector === '#rc-active-incidents-table' ? currentActiveIncidents : currentAcceptedIncidents, function (_, item) {
+					existingIds[String(item.id)] = true;
+				});
+				rows = rows.filter(function (item) {
+					var id = String(item.id);
+					if (existingIds[id]) {
+						return false;
+					}
+					existingIds[id] = true;
+					return true;
+				});
+			}
+			page.cursor = config.signedCursor ? null : (response.nextCursor || null);
+			page.cursorToken = config.signedCursor ? (response[config.tokenKey] || null) : null;
+			page.hasMore = response.hasMore === true;
+			page.loading = false;
+			if (append) {
+				ensureTableBatchState(selector).visibleUnits += rows.length;
+			} else {
+				ensureTableBatchState(selector).visibleUnits = tableBatchSize;
+			}
+			config.render(rows, append);
+		}, function () {
+			if (generation !== (tablePageGeneration[selector] || 0) || tablePageStates[selector] !== page) {
+				return;
+			}
+			page.loading = false;
+			updateTableRowBatching(selector);
+		}, options);
+	}
+
+	function loadPagedTable(selector, options) {
+		tablePageGeneration[selector] = (tablePageGeneration[selector] || 0) + 1;
+		tablePageStates[selector] = {cursor: null, cursorToken: null, hasMore: false, loading: false};
+		ensureTableBatchState(selector).visibleUnits = tableBatchSize;
+		return requestTablePage(selector, false, options);
+	}
+
+	function showMoreTableRows(selector) {
+		var state = ensureTableBatchState(selector);
+		var units = tableBatchUnitsFromRows($(selector).find('tbody tr'), tableBatchUnitSize(selector));
+		if (state.visibleUnits < units.length) {
+			state.visibleUnits = Math.min(units.length, state.visibleUnits + tableBatchSize);
+			updateTableRowBatching(selector);
+			return;
+		}
+		var page = tablePageStates[selector];
+		if (page && page.hasMore && !page.loading) {
+			requestTablePage(selector, true);
+		}
 	}
 
 	function rememberRules(rules) {
@@ -933,23 +1062,25 @@
 		});
 	}
 
-	function rememberIncidents(selector, incidents) {
+	function rememberIncidents(selector, incidents, append) {
 		var rows = (incidents || []).slice();
 		if (selector === '#rc-active-incidents-table') {
-			currentActiveIncidents = rows;
+			currentActiveIncidents = append ? currentActiveIncidents.concat(rows) : rows;
 			return;
 		}
 		if (selector === '#rc-recent-incidents-table') {
-			currentAcceptedIncidents = rows;
+			currentAcceptedIncidents = append ? currentAcceptedIncidents.concat(rows) : rows;
 		}
 	}
 
-	function rememberSuppressedIncidents(items) {
-		currentSuppressedIncidents = (items || []).slice();
+	function rememberSuppressedIncidents(items, append) {
+		var rows = (items || []).slice();
+		currentSuppressedIncidents = append ? currentSuppressedIncidents.concat(rows) : rows;
 	}
 
-	function rememberAlertHistory(items) {
-		currentAlertHistory = (items || []).slice();
+	function rememberAlertHistory(items, append) {
+		var rows = (items || []).slice();
+		currentAlertHistory = append ? currentAlertHistory.concat(rows) : rows;
 	}
 
 	function sameRuleId(item, ruleId) {
@@ -1507,9 +1638,9 @@
 		$('#rc-rule-start-as-help').text(helpText).toggleClass('text-muted', disabled);
 	}
 
-	function renderIncidents(selector, incidents, active) {
+	function renderIncidents(selector, incidents, active, append) {
 		var rows = [];
-		rememberIncidents(selector, incidents);
+		rememberIncidents(selector, incidents, append);
 		$.each(incidents || [], function (_, i) {
 			var detectionMode = detectionModeLabel(i.mode);
 			var rawState = String(i.state || '');
@@ -1545,12 +1676,18 @@
 					+ '</tr>');
 			}
 		});
-		if (!rows.length) {
+		if (!rows.length && !append) {
 			var emptyColumnCount = $(selector + ' thead th').length || 1;
 			var emptyText = active ? 'No active incidents recorded yet.' : 'No recent incidents recorded yet.';
 			rows.push('<tr class="rc-empty-state"><td colspan="' + emptyColumnCount + '" class="text-muted">' + emptyText + '</td></tr>');
 		}
-		$(selector + ' tbody').html(rows.join(''));
+		var $tbody = $(selector + ' tbody');
+		if (append) {
+			$tbody.find('.rc-empty-state').remove();
+			if (rows.length) { $tbody.append(rows.join('')); }
+		} else {
+			$tbody.html(rows.join(''));
+		}
 		updateTableRowBatching(selector);
 	}
 
@@ -1568,12 +1705,12 @@
 		return 'New incident suppressed until ' + suppressionExpiresAt + ' because suppression was active.';
 	}
 
-	function renderSuppressedIncidents(items) {
+	function renderSuppressedIncidents(items, append) {
 		var $table = $('#rc-suppressed-incidents-table');
 		if (!$table.length) {
 			return;
 		}
-		rememberSuppressedIncidents(items);
+		rememberSuppressedIncidents(items, append);
 		var rows = [];
 		$.each(items || [], function (_, row) {
 			var modeLabel = detectionModeLabel(row.mode || 'repeat');
@@ -1604,15 +1741,21 @@
 				+ '<td>' + actionCell + '</td>'
 				+ '</tr>');
 		});
-		if (!rows.length) {
+		if (!rows.length && !append) {
 			rows.push('<tr class="rc-empty-state"><td colspan="11" class="text-muted">No suppressed incidents recorded yet.</td></tr>');
 		}
-		$table.find('tbody').html(rows.join(''));
+		var $tbody = $table.find('tbody');
+		if (append) {
+			$tbody.find('.rc-empty-state').remove();
+			if (rows.length) { $tbody.append(rows.join('')); }
+		} else {
+			$tbody.html(rows.join(''));
+		}
 		updateTableRowBatching('#rc-suppressed-incidents-table');
 	}
 
-	function renderAlertHistory(items) {
-		rememberAlertHistory(items);
+	function renderAlertHistory(items, append) {
+		rememberAlertHistory(items, append);
 		var modeLabels = {
 			repeat: 'Repeat',
 			invert: 'Invert'
@@ -1731,11 +1874,17 @@
 				+ '<td>' + renderFailureDetailCell(h) + '</td>'
 				+ '</tr>');
 		});
-		if (!rows.length) {
+		if (!rows.length && !append) {
 			var columnCount = $('#rc-alert-history-table thead th').length || 11;
 			rows.push('<tr class="rc-empty-state"><td colspan="' + columnCount + '" class="text-muted">No alert history recorded yet.</td></tr>');
 		}
-		$('#rc-alert-history-table tbody').html(rows.join(''));
+		var $tbody = $('#rc-alert-history-table tbody');
+		if (append) {
+			$tbody.find('.rc-empty-state').remove();
+			if (rows.length) { $tbody.append(rows.join('')); }
+		} else {
+			$tbody.html(rows.join(''));
+		}
 		updateTableRowBatching('#rc-alert-history-table');
 	}
 
@@ -2859,23 +3008,11 @@
 	}
 
 	function loadActiveIncidents(options) {
-		var opts = options || {};
-		if ($('#rc-active-incidents-table').length) {
-			return ajax('getincidents', {view: 'active'}, function (response) {
-				renderIncidents('#rc-active-incidents-table', response.incidents || [], true);
-			}, null, {silent: !!opts.silent});
-		}
-		return $.Deferred().resolve().promise();
+		return $('#rc-active-incidents-table').length ? loadPagedTable('#rc-active-incidents-table', options) : $.Deferred().resolve().promise();
 	}
 
 	function loadAcceptedIncidents(options) {
-		var opts = options || {};
-		if ($('#rc-recent-incidents-table').length) {
-			return ajax('getincidents', {view: 'accepted'}, function (response) {
-				renderIncidents('#rc-recent-incidents-table', response.incidents || [], false);
-			}, null, {silent: !!opts.silent});
-		}
-		return $.Deferred().resolve().promise();
+		return $('#rc-recent-incidents-table').length ? loadPagedTable('#rc-recent-incidents-table', options) : $.Deferred().resolve().promise();
 	}
 
 	function loadIncidents(options) {
@@ -2883,23 +3020,17 @@
 	}
 
 	function loadSuppressedIncidents(options) {
-		var opts = options || {};
 		if (!$('#rc-suppressed-incidents-table').length) {
 			return $.Deferred().resolve().promise();
 		}
-		return ajax('getsuppressedincidents', {}, function (response) {
-			renderSuppressedIncidents(response.suppressedIncidents || []);
-		}, null, {silent: !!opts.silent});
+		return loadPagedTable('#rc-suppressed-incidents-table', options);
 	}
 
 	function loadAlertHistory(options) {
-		var opts = options || {};
 		if (!$('#rc-alert-history-table').length) {
 			return $.Deferred().resolve().promise();
 		}
-		return ajax('getalerthistory', {}, function (response) {
-			renderAlertHistory(response.alertHistory || []);
-		}, null, {silent: !!opts.silent});
+		return loadPagedTable('#rc-alert-history-table', options);
 	}
 
 	function loadEngineStatus(options) {
@@ -3042,10 +3173,7 @@
 			if (tableId === '') {
 				return;
 			}
-			var selector = '#' + tableId;
-			var state = ensureTableBatchState(selector);
-			state.visibleUnits += tableBatchSize;
-			updateTableRowBatching(selector);
+			showMoreTableRows('#' + tableId);
 		});
 
 		$(document).off('click.repeatcaller', '.rc-table-show-less').on('click.repeatcaller', '.rc-table-show-less', function () {
@@ -3182,9 +3310,10 @@
 				suppression_history_prune_policy: $('#rc-setting-suppression-prune').val()
 			}, function (response) {
 				showMessage(response.message || 'Pruning completed.', 'success');
-				renderAlertHistory(response.alertHistory || []);
+				loadAlertHistory({silent: true});
 				loadSuppressedIncidents({silent: true});
-				renderIncidents('#rc-recent-incidents-table', response.recentIncidents || [], false);
+				loadAcceptedIncidents({silent: true});
+				loadActiveIncidents({silent: true});
 				loadEngineStatus();
 				syncChangeToken();
 			}, function () {
@@ -3200,7 +3329,7 @@
 			ajax('clearalerthistory', {}, function (response) {
 				var deletedCount = parseInt((response && response.deleted_count) || 0, 10) || 0;
 				showMessage('Alert History cleared (' + deletedCount + ' rows).', 'success');
-				renderAlertHistory((response && response.alertHistory) || []);
+				loadAlertHistory({silent: true});
 				syncChangeToken();
 			}, function () {
 				endAction();
@@ -3221,7 +3350,7 @@
 				$button.text('Clearing...');
 				ajax('clearsuppression', {suppression_history_id: historyId}, function (response) {
 					showMessage(response.message || 'Suppression cleared.', 'success');
-					renderSuppressedIncidents(response.suppressedIncidents || []);
+					loadSuppressedIncidents({silent: true});
 					renderEngine(response.engineStatus || {});
 					syncChangeToken();
 					scrollToPageTop();
@@ -3373,8 +3502,8 @@
 			beginAction();
 			ajax('acceptincident', {incident_id: incidentId}, function (response) {
 				showMessage(response.message || 'Incident accepted.', 'success');
-				renderIncidents('#rc-active-incidents-table', response.activeIncidents || [], true);
-				renderIncidents('#rc-recent-incidents-table', response.recentIncidents || [], false);
+				loadActiveIncidents({silent: true});
+				loadAcceptedIncidents({silent: true});
 				loadEngineStatus();
 				syncChangeToken();
 			}, function () {

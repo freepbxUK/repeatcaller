@@ -261,7 +261,9 @@ assert_true(strpos($controllerSource, 'if (!$this->validateCsrfToken())') !== fa
 // and must not be double-bound on repeated renders.
 $viewSource = file_get_contents(__DIR__ . '/../views/main.php');
 assert_true(strpos($viewSource, 'id="rc-rule-test-email"') !== false, 'Test Email button must exist in the rule editor');
-assert_true((bool)preg_match('/id="rc-rule-email-recipients"[\s\S]{0,400}id="rc-rule-test-email" disabled/', $viewSource), 'Test Email button must sit with the rule Email Recipients control and start disabled');
+assert_true((bool)preg_match('/<div class="input-group"><input type="text" id="rc-rule-email-recipients"[^>]*><span class="input-group-btn"><button type="button" class="btn btn-warning" style="font-size:16px;" id="rc-rule-test-email" disabled>/', $viewSource), 'Test Email button must be attached to the right of the Email Recipients input in one input group, use 16px text, and start disabled');
+assert_true(substr_count($viewSource, 'id="rc-rule-test-email"') === 1, 'there must be exactly one Test Email button');
+assert_true((bool)preg_match('/id="rc-rule-test-email"[^<]*<\?php echo _\(\'Test Email\'\); \?><\/button><\/span><\/div><p class="help-block"><\?php echo _\(\'Use commas to separate multiple email addresses\.\'\); \?><\/p>/', $viewSource), 'Email Recipients help text must sit beneath the combined input group');
 
 $jsSource = file_get_contents(__DIR__ . '/../assets/js/repeatcaller.js');
 assert_true(strpos($jsSource, "ajax('testruleemail'") !== false, 'frontend must call the testruleemail AJAX command');

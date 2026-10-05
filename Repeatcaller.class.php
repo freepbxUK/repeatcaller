@@ -4,7 +4,7 @@
  *
  * Repeated inbound caller detection, incidents, and alerting.
  *
- * @copyright 2026 20 Telecom Ltd (trading as 20tele.com)
+ * @copyright 2026 © 20 Telecom Ltd, trading as FreePBX UK.
  * @license   GPLv3+
  */
 
@@ -15,11 +15,13 @@ class Repeatcaller implements \BMO {
 	/** Fallback only. Authoritative version lives in module.xml. */
 	const VERSION = '1.1.0';
 	const CSRF_SESSION_KEY = 'repeatcaller_csrf_token';
+	const SUPPRESSION_CURSOR_KEY_SESSION_KEY = 'repeatcaller_suppression_cursor_key';
 	const REPEAT_MODE_NEVER = 'never';
 	const REPEAT_MODE_FIVE_MINUTES = '5m';
 	const REPEAT_MODE_HOURLY = 'hourly';
 	const REPEAT_MODE_DAILY = 'daily';
 	const REPEAT_MODE_ESCALATING = 'escalating';
+	const TABLE_PAGE_SIZE = 15;
 	const AJAX_COMMANDS = [
 		'getenginestatus',
 		'getalertcalllanguagestatus',
@@ -222,9 +224,6 @@ class Repeatcaller implements \BMO {
 			'engineStatus' => $data['engineStatus'],
 			'globalSettings' => $data['globalSettings'],
 			'rules' => $data['rules'],
-			'activeIncidents' => $data['activeIncidents'],
-			'recentIncidents' => $data['recentIncidents'],
-			'alertHistory' => $data['alertHistory'],
 			'inboundRoutes' => $data['inboundRoutes'],
 			'systemRecordings' => $data['systemRecordings'],
 			'alertCallLanguageSupport' => $data['alertCallLanguageSupport'],
@@ -355,9 +354,6 @@ class Repeatcaller implements \BMO {
 			'engineStatus' => $this->rcEngineStatus($settings),
 			'globalSettings' => $settings,
 			'rules' => $repository->loadRulesSummary(),
-			'activeIncidents' => $repository->loadIncidents('active', 100),
-			'recentIncidents' => $repository->loadIncidents('accepted', 200),
-			'alertHistory' => $repository->loadIncidentAlertHistory(200),
 			'inboundRoutes' => $repository->loadInboundRoutes(),
 			'systemRecordings' => $this->loadSystemRecordingsForEditor(),
 			'alertCallLanguageSupport' => $this->alertCallLanguageSupportStatus(),
@@ -857,12 +853,33 @@ class Repeatcaller implements \BMO {
 		if ($view === 'recent') {
 			$view = 'accepted';
 		}
-		return ['status' => true, 'incidents' => $this->rcRepository()->loadIncidents($view, 300)];
+		$page = $this->rcRepository()->loadIncidentsPage($view, $this->requestTableCursor(), self::TABLE_PAGE_SIZE);
+		return ['status' => true, 'incidents' => $page['rows'], 'hasMore' => $page['hasMore'], 'nextCursor' => $page['nextCursor']];
 	}
 
 	private function rcHandleGetSuppressedIncidents(): array {
+		$cursor = null;
 		$asOf = $this->now();
-		return ['status' => true, 'suppressedIncidents' => $this->rcRepository()->loadActiveSuppressedIncidents($asOf, 300)];
+		$continuationToken = isset($_REQUEST['cursor_token']) ? trim((string)$_REQUEST['cursor_token']) : '';
+		$hasUnsignedCursorFields = isset($_REQUEST['cursor_id']) || isset($_REQUEST['cursor_time']) || isset($_REQUEST['cursor_as_of']);
+		if ($continuationToken !== '') {
+			if ($hasUnsignedCursorFields) {
+				return ['status' => false, 'message' => _('Invalid table cursor.')];
+			}
+			$continuation = $this->decodeSuppressionCursorToken($continuationToken);
+			if ($continuation === null) {
+				return ['status' => false, 'message' => _('Invalid table cursor.')];
+			}
+			$cursor = $continuation['cursor'];
+			$asOf = $continuation['asOf'];
+		} elseif ($hasUnsignedCursorFields || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $asOf)) {
+			return ['status' => false, 'message' => _('Invalid table cursor.')];
+		}
+		$page = $this->rcRepository()->loadActiveSuppressedIncidentsPage($asOf, $cursor, self::TABLE_PAGE_SIZE);
+		$nextCursorToken = !empty($page['hasMore']) && is_array($page['nextCursor'])
+			? $this->createSuppressionCursorToken($page['nextCursor'], $page['asOf'])
+			: null;
+		return ['status' => true, 'suppressedIncidents' => $page['rows'], 'hasMore' => $page['hasMore'], 'nextCursorToken' => $nextCursorToken];
 	}
 
 	private function rcHandleClearSuppression(): array {
@@ -880,7 +897,6 @@ class Repeatcaller implements \BMO {
 			'urgency' => 'low',
 			'status' => true,
 			'message' => _('Suppression cleared.'),
-			'suppressedIncidents' => $this->rcRepository()->loadActiveSuppressedIncidents($clearedAt, 300),
 			'engineStatus' => $this->rcEngineStatus($this->rcSettings()),
 		];
 	}
@@ -907,13 +923,12 @@ class Repeatcaller implements \BMO {
 		return [
 			'status' => true,
 			'message' => _('Incident accepted.'),
-			'activeIncidents' => $repository->loadIncidents('active', 200),
-			'recentIncidents' => $repository->loadIncidents('accepted', 300),
 		];
 	}
 
 	private function rcHandleGetAlertHistory(): array {
-		return ['status' => true, 'alertHistory' => $this->rcRepository()->loadIncidentAlertHistory(300)];
+		$page = $this->rcRepository()->loadIncidentAlertHistoryPage($this->requestTableCursor(), self::TABLE_PAGE_SIZE);
+		return ['status' => true, 'alertHistory' => $page['rows'], 'hasMore' => $page['hasMore'], 'nextCursor' => $page['nextCursor']];
 	}
 
 	private function rcHandleGetUiChangeToken(): array {
@@ -969,9 +984,6 @@ class Repeatcaller implements \BMO {
 			'status' => true,
 			'message' => _('Pruning completed.'),
 			'deleted' => $deleted,
-			'alertHistory' => $repository->loadIncidentAlertHistory(300),
-			'suppressedIncidents' => $repository->loadSuppressedIncidentHistory(300),
-			'recentIncidents' => $repository->loadIncidents('accepted', 300),
 		];
 	}
 
@@ -983,7 +995,6 @@ class Repeatcaller implements \BMO {
 			'status' => true,
 			'message' => _('Alert history cleared.'),
 			'deleted_count' => $deletedCount,
-			'alertHistory' => $repository->loadIncidentAlertHistory(300),
 		];
 	}
 
@@ -1799,6 +1810,95 @@ class Repeatcaller implements \BMO {
 	private function positiveRequestId(string $key): int {
 		$value = isset($_REQUEST[$key]) ? (string)$_REQUEST[$key] : '';
 		return ctype_digit($value) && (int)$value > 0 ? (int)$value : 0;
+	}
+
+	private function requestTableCursor(): ?array {
+		$rawId = isset($_REQUEST['cursor_id']) ? trim((string)$_REQUEST['cursor_id']) : '';
+		if ($rawId === '') {
+			return null;
+		}
+		$cursorId = $this->positiveRequestId('cursor_id');
+		$rawTime = isset($_REQUEST['cursor_time']) ? trim((string)$_REQUEST['cursor_time']) : '';
+		if ($cursorId <= 0 || ($rawTime !== '' && !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $rawTime))) {
+			throw new \InvalidArgumentException('Invalid table cursor.');
+		}
+		return ['time' => $rawTime !== '' ? $rawTime : null, 'id' => $cursorId];
+	}
+
+	private function createSuppressionCursorToken(array $cursor, string $asOf): string {
+		$key = $this->suppressionCursorSigningKey();
+		$payload = json_encode([
+			'purpose' => 'suppressed-incidents-page',
+			'version' => 1,
+			'asOf' => $asOf,
+			'time' => $cursor['time'] ?? null,
+			'id' => (int)($cursor['id'] ?? 0),
+		], JSON_UNESCAPED_SLASHES);
+		if (!is_string($payload)) {
+			throw new \RuntimeException('Unable to encode suppression cursor.');
+		}
+		$encodedPayload = $this->base64UrlEncode($payload);
+		$signature = hash_hmac('sha256', $encodedPayload, $key, true);
+		return $encodedPayload . '.' . $this->base64UrlEncode($signature);
+	}
+
+	private function decodeSuppressionCursorToken(string $token): ?array {
+		if (strlen($token) > 2048 || !preg_match('/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/D', $token, $matches)) {
+			return null;
+		}
+		try {
+			$key = $this->suppressionCursorSigningKey();
+		} catch (\Throwable $e) {
+			return null;
+		}
+		$expectedSignature = hash_hmac('sha256', $matches[1], $key, true);
+		$providedSignature = $this->base64UrlDecode($matches[2]);
+		if ($providedSignature === null || !hash_equals($expectedSignature, $providedSignature)) {
+			return null;
+		}
+		$payloadJson = $this->base64UrlDecode($matches[1]);
+		$payload = $payloadJson !== null ? json_decode($payloadJson, true) : null;
+		if (!is_array($payload)
+			|| ($payload['purpose'] ?? null) !== 'suppressed-incidents-page'
+			|| (int)($payload['version'] ?? 0) !== 1
+			|| !is_string($payload['asOf'] ?? null)
+			|| !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $payload['asOf'])
+			|| !is_int($payload['id'] ?? null)
+			|| $payload['id'] <= 0
+			|| !(($payload['time'] ?? null) === null || (is_string($payload['time']) && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $payload['time'])))) {
+			return null;
+		}
+		return [
+			'asOf' => $payload['asOf'],
+			'cursor' => ['time' => $payload['time'] ?? null, 'id' => $payload['id']],
+		];
+	}
+
+	private function suppressionCursorSigningKey(): string {
+		if (!$this->ensureSessionForCsrfWrite()) {
+			throw new \RuntimeException('Session unavailable for suppression cursor signing.');
+		}
+		$key = isset($_SESSION[self::SUPPRESSION_CURSOR_KEY_SESSION_KEY])
+			? (string)$_SESSION[self::SUPPRESSION_CURSOR_KEY_SESSION_KEY]
+			: '';
+		if (!preg_match('/^[a-f0-9]{64}$/D', $key)) {
+			$key = bin2hex(random_bytes(32));
+			$_SESSION[self::SUPPRESSION_CURSOR_KEY_SESSION_KEY] = $key;
+		}
+		return $key;
+	}
+
+	private function base64UrlEncode(string $value): string {
+		return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+	}
+
+	private function base64UrlDecode(string $value): ?string {
+		$remainder = strlen($value) % 4;
+		if ($remainder === 1) {
+			return null;
+		}
+		$decoded = base64_decode(strtr($value . str_repeat('=', (4 - $remainder) % 4), '-_', '+/'), true);
+		return $decoded === false ? null : $decoded;
 	}
 
 	private function acquireReconcileLock(): bool {

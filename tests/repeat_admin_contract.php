@@ -1466,6 +1466,23 @@ assert_same('0', (string)($bulkRuleAAfterSingleToggle['enabled'] ?? '0'), 'indiv
 // Focused contract: persisted snooze-selection state semantics.
 $controllerSource = file_get_contents(__DIR__ . '/../Repeatcaller.class.php');
 assert_true($controllerSource !== false, 'Repeatcaller controller source should be readable');
+$pageDataStart = strpos($controllerSource, 'private function rcBuildPageData(): array');
+$pageDataEnd = strpos($controllerSource, 'private function alertCallLanguageSupport()', $pageDataStart !== false ? $pageDataStart : 0);
+$pageDataSource = $pageDataStart !== false && $pageDataEnd !== false ? substr($controllerSource, $pageDataStart, $pageDataEnd - $pageDataStart) : '';
+assert_true(strpos($pageDataSource, 'loadIncidents(') === false && strpos($pageDataSource, 'loadIncidentAlertHistory(') === false, 'affected tables should not preload incident or alert-history datasets during page bootstrap');
+assert_true(strpos($controllerSource, 'loadIncidentsPage($view, $this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'incident AJAX handler should request one 15-row cursor page');
+assert_true(strpos($controllerSource, 'loadIncidentAlertHistoryPage($this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'alert-history AJAX handler should request one 15-row cursor page');
+assert_true(strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $cursor, self::TABLE_PAGE_SIZE)') !== false, 'suppressed-incidents AJAX handler should request one 15-row cursor page');
+assert_true(strpos($controllerSource, 'const TABLE_PAGE_SIZE = 15;') !== false, 'backend incremental page size should be fixed at 15');
+assert_true(strpos($controllerSource, 'loadIncidentsPage($view, $this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'incident endpoint must return cursor pages rather than cap the table at a cumulative row count');
+assert_true(strpos($controllerSource, 'loadIncidentAlertHistoryPage($this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'alert-history endpoint must return cursor pages rather than cap the table at a cumulative row count');
+assert_true(strpos($controllerSource, 'private function requestTableCursor(): ?array') !== false && strpos($controllerSource, "'cursor_id'") !== false && strpos($controllerSource, "'cursor_time'") !== false, 'AJAX controller must validate and parse timestamp/ID continuation cursors');
+$getIncidentsStart = strpos($controllerSource, 'private function rcHandleGetIncidents(): array');
+$getIncidentsEnd = strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array', $getIncidentsStart !== false ? $getIncidentsStart : 0);
+$getIncidentsSource = $getIncidentsStart !== false && $getIncidentsEnd !== false ? substr($controllerSource, $getIncidentsStart, $getIncidentsEnd - $getIncidentsStart) : '';
+assert_true(strpos($getIncidentsSource, 'loadIncidents($view, 300)') === false, 'incident getter must not retain the former 300-row preload');
+$bootstrapViewSource = file_get_contents(__DIR__ . '/../views/main.php');
+assert_true(strpos($bootstrapViewSource, 'activeIncidents:') === false && strpos($bootstrapViewSource, 'recentIncidents:') === false && strpos($bootstrapViewSource, 'alertHistory:') === false && strpos($bootstrapViewSource, 'suppressedIncidents:') === false, 'paged tables should not duplicate large incident/history arrays in the HTML bootstrap');
 $saveMethodStart = strpos($controllerSource, 'private function rcHandleSaveRule(): array');
 $saveMethodEnd = strpos($controllerSource, 'private function rcHandleDeleteRule(): array', $saveMethodStart !== false ? $saveMethodStart : 0);
 $saveMethodSource = $saveMethodStart !== false && $saveMethodEnd !== false ? substr($controllerSource, $saveMethodStart, $saveMethodEnd - $saveMethodStart) : '';
@@ -1690,7 +1707,7 @@ assert_true(strpos($jsSource, "alert_call: 'Alert Call'") !== false, 'Alert Hist
 assert_true(strpos($jsSource, "sent: 'Sent'") !== false, 'Alert History status label should humanize sent to Sent');
 assert_true(strpos($jsSource, "accepted: 'Accepted'") !== false && strpos($jsSource, "busy: 'Busy'") !== false, 'Alert History status labels should normalize accepted and busy consistently');
 assert_true(strpos($jsSource, "answered_no_response: 'Answered, No Response'") !== false, 'Alert History status mapping should render answered_no_response as Answered, No Response');
-assert_true((bool)preg_match('/function loadAlertHistory\(options\) \{[\s\S]*ajax\(\'getalerthistory\', \{\}, function \(response\) \{[\s\S]*renderAlertHistory\(response\.alertHistory \|\| \[\]\);[\s\S]*\}\);[\s\S]*\}/', $jsSource), 'live Alert History path should render rows through renderAlertHistory from getalerthistory AJAX response');
+assert_true((bool)preg_match('/function loadAlertHistory\(options\) \{[\s\S]*loadPagedTable\(\'\#rc-alert-history-table\', options\);/', $jsSource), 'live Alert History path should load its first page through the shared cursor-paged AJAX loader');
 assert_true(strpos($jsSource, 'function incidentSubjectDisplay(row) {') !== false, 'history tables should use one dedicated subject helper for invert-only presentation changes');
 assert_true(strpos($jsSource, "var threshold = parseInt(data.threshold_count || data.incident_threshold_count || 0, 10);") !== false && strpos($jsSource, "var windowMinutes = parseInt(data.observation_window_minutes || data.incident_observation_window_minutes || 0, 10);") !== false, 'invert subject display should read historical threshold and window snapshots from the incident row');
 assert_true(strpos($jsSource, "if (modeValue === 'invert') {") !== false, 'subject helper should only rewrite invert-mode rows');
@@ -1704,7 +1721,11 @@ assert_true(strpos($jsSource, "'#rc-rules-table'") !== false && strpos($jsSource
 assert_true(strpos($jsSource, 'function tableBatchUnitSize(selector) {') !== false && strpos($jsSource, "return selector === '#rc-rules-table' ? 2 : 1;") !== false, 'rules table batching should keep primary rows and explainer rows together as one unit');
 assert_true(strpos($jsSource, 'function updateTableRowBatching(selector) {') !== false, 'table batching should be managed through one reusable updater helper');
 assert_true(strpos($jsSource, 'rc-table-show-more') !== false && strpos($jsSource, 'rc-table-show-less') !== false, 'table batching should render explicit Show more and Show less controls');
-assert_true(strpos($jsSource, 'state.visibleUnits += tableBatchSize;') !== false && strpos($jsSource, 'state.visibleUnits = tableBatchSize;') !== false, 'Show more and Show less handlers should reveal next batches and reset to the first batch');
+assert_true(strpos($jsSource, 'function showMoreTableRows(selector) {') !== false && strpos($jsSource, 'requestTablePage(selector, true);') !== false, 'Show More should reveal cached rows first and then request one additional backend page');
+assert_true(strpos($jsSource, 'state.visibleUnits = tableBatchSize;') !== false, 'Show Less should reset visibility to the first 15 rows while retaining loaded rows');
+assert_true(strpos($jsSource, 'payload.cursor_time = page.cursor.time') !== false && strpos($jsSource, 'payload.cursor_id = page.cursor.id') !== false && strpos($jsSource, 'page.hasMore = response.hasMore === true;') !== false, 'subsequent table requests should send the last cursor and preserve backend hasMore state');
+assert_true(strpos($jsSource, 'payload.cursor_token = page.cursorToken;') !== false && strpos($jsSource, 'page.cursorToken = config.signedCursor ? (response[config.tokenKey] || null) : null;') !== false, 'suppression pagination must send and retain the opaque authenticated continuation token');
+assert_true((bool)preg_match('/\.rc-table-show-more[\s\S]*showMoreTableRows\(\'\#\' \+ tableId\);/', $jsSource), 'Show More controls must dispatch to the shared incremental loader');
 assert_true(strpos($jsSource, "updateTableRowBatching('#rc-rules-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-suppressed-incidents-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-alert-history-table');") !== false && strpos($jsSource, 'updateTableRowBatching(selector);') !== false, 'all table render paths should refresh batching visibility after rows are rebuilt');
 assert_true(strpos($jsSource, 'updateAllTableRowBatching();') !== false, 'initial page setup should apply table batching controls after the UI is bootstrapped');
 assert_true(strpos($jsSource, 'function normalizeCode(rawValue) {') !== false, 'alert-history formatter should normalize canonical codes in one helper');
@@ -1877,6 +1898,19 @@ function descendantMatch(element, selector) {
 	if (!selector) {
 		return false;
 	}
+	if (selector === 'tbody tr') {
+		if (element.tag !== 'tr') {
+			return false;
+		}
+		let current = element.parent;
+		while (current) {
+			if (current.tag === 'tbody') {
+				return true;
+			}
+			current = current.parent;
+		}
+		return false;
+	}
 	if (selector === 'input, button') {
 		return element.tag === 'input' || element.tag === 'button';
 	}
@@ -1914,6 +1948,24 @@ function collectDescendants(element, selector) {
 	}
 	visit(element);
 	return found;
+}
+
+function appendTableRows(tbody, html) {
+	const rowPattern = /<tr([^>]*)>([\s\S]*?)<\/tr>/gi;
+	let match;
+	while ((match = rowPattern.exec(String(html || ''))) !== null) {
+		const classMatch = match[1].match(/class="([^"]*)"/i);
+	const row = new Element('tr', '', classMatch ? classMatch[1].split(/\s+/).filter(Boolean) : []);
+	const cellPattern = /<td([^>]*)>([\s\S]*?)<\/td>/gi;
+	let cellMatch;
+	while ((cellMatch = cellPattern.exec(match[2])) !== null) {
+		const cell = new Element('td');
+		cell.textContent = cellMatch[2].replace(/<[^>]*>/g, '');
+		row.append(cell);
+	}
+	register(row);
+	tbody.append(row);
+	}
 }
 
 function splitSelector(selector) {
@@ -2011,12 +2063,17 @@ class Wrap {
 		});
 		return this;
 	}
+	get(index) { return this.els[index]; }
 	html(value) {
 		if (value === undefined) {
 			return this.els[0] ? this.els[0].htmlContent : '';
 		}
 		this.els.forEach(function (element) {
 			element.htmlContent = value;
+			if (element.tag === 'tbody') {
+				element.children = [];
+				appendTableRows(element, value);
+			}
 		});
 		return this;
 	}
@@ -2026,6 +2083,9 @@ class Wrap {
 			classes.forEach(function (cls) { element.classes.add(cls); });
 		});
 		return this;
+	}
+	hasClass(value) {
+		return !!this.els[0] && this.els[0].classes.has(value);
 	}
 	removeClass(value) {
 		const classes = String(value || '').split(/\s+/).filter(Boolean);
@@ -2059,7 +2119,11 @@ class Wrap {
 		this.els.forEach(function (element) {
 			nodes.forEach(function (node) {
 				if (node) {
-					element.append(node);
+					if (typeof node === 'string' && element.tag === 'tbody' && node.indexOf('<tr') !== -1) {
+						appendTableRows(element, node);
+					} else {
+						element.append(node);
+					}
 				}
 			});
 		});
@@ -2072,6 +2136,7 @@ class Wrap {
 		});
 		return new Wrap(matches);
 	}
+	get(index) { return this.els[index]; }
 	is(selector) {
 		if (!this.els.length) {
 			return false;
@@ -2318,6 +2383,21 @@ byId['rc-setting-country'].value = '44';
 createButton('rc-run-now', ['btn', 'btn-warning']);
 createButton('rc-rule-test-email', ['btn', 'btn-default']);
 createGeneric('rc-rules-table', 'table');
+const activeIncidentResponsive = createGeneric('rc-active-incidents-responsive', 'div', ['table-responsive']);
+const activeIncidentTable = createGeneric('rc-active-incidents-table', 'table');
+const activeIncidentThead = createGeneric('rc-active-incidents-thead', 'thead');
+const activeIncidentHeaderRow = makeElement('tr');
+activeIncidentThead.append(activeIncidentHeaderRow);
+activeIncidentHeaderRow.append(new Element('th'));
+const activeIncidentTbody = createGeneric('rc-active-incidents-tbody', 'tbody');
+activeIncidentResponsive.append(activeIncidentTable);
+activeIncidentTable.append(activeIncidentThead);
+activeIncidentTable.append(activeIncidentTbody);
+const alertHistoryResponsive = createGeneric('rc-alert-history-responsive', 'div', ['table-responsive']);
+const alertHistoryTable = createGeneric('rc-alert-history-table', 'table');
+const alertHistoryTbody = createGeneric('rc-alert-history-tbody', 'tbody');
+alertHistoryResponsive.append(alertHistoryTable);
+alertHistoryTable.append(alertHistoryTbody);
 const rulesTbody = createGeneric('rc-rules-table-body', 'tbody');
 byId['rc-rules-table'].append(rulesTbody);
 const editRow = new Element('tr');
@@ -2376,8 +2456,51 @@ const context = {
 vm.createContext(context);
 let source = fs.readFileSync('/workspaces/repeatcaller/assets/js/repeatcaller.js', 'utf8');
 source = source.replace('function ajax(command, payload, done, onComplete, options) {', 'function ajax(command, payload, done, onComplete, options) { var interceptor = (globalThis && globalThis.__testAjaxInterceptor) || (globalThis && globalThis.window && globalThis.window.__testAjaxInterceptor); if (interceptor && typeof interceptor === \'function\') { return interceptor(command, payload, done, onComplete, options); }');
-source = source.replace('function renderAlertHistory(items) {', 'function renderAlertHistory(items) { window.__alertCallFailureSummary = alertCallFailureSummary;');
-source = source.replace('})(jQuery);', '\nwindow.__hooks = { loadRule: loadRule, saveRule: saveRule, collectRouteList: collectRouteList, updateDidRouteListDefaults: updateDidRouteListDefaults, clearAlertCallCallerIdSessionState: clearAlertCallCallerIdSessionState, setEditingRuleRow: setEditingRuleRow, updateRuleRowActionState: updateRuleRowActionState, updateStartAsEditorState: updateStartAsEditorState, updateAlertCallAndEmailState: updateAlertCallAndEmailState, updateAlertCallCallerIdState: updateAlertCallCallerIdState, updateAlertCallDestinationAddButtonState: updateAlertCallDestinationAddButtonState, addAlertCallDestinationsFromInput: addAlertCallDestinationsFromInput, triggerAlertCallDestinationAdd: triggerAlertCallDestinationAdd, handleAlertCallDestinationInputKeydown: handleAlertCallDestinationInputKeydown, applyAlertCallCallerIdSelfTriggerSafeguard: applyAlertCallCallerIdSelfTriggerSafeguard, applyAlertCallCallerIdSelfTriggerSafeguardForSave: applyAlertCallCallerIdSelfTriggerSafeguardForSave, syncAlertCallCallerIdSafeguardState: syncAlertCallCallerIdSafeguardState, showAlertCallSelfTriggerWarning: showAlertCallSelfTriggerWarning, showMessage: showMessage, alertCallSelfTriggerWarningDurationSeconds: alertCallSelfTriggerWarningDurationSeconds, alertCallSelfTriggerWarningTimeoutMs: alertCallSelfTriggerWarningTimeoutMs, initializeRunNowAvailabilityFromBootstrap: initializeRunNowAvailabilityFromBootstrap, renderAlertCallDestinations: renderAlertCallDestinations, updateAlertCallDestinationHiddenField: updateAlertCallDestinationHiddenField, updateAlertCallStrategyEditorState: updateAlertCallStrategyEditorState, renderAlertHistory: renderAlertHistory, loadInboundRoutes: loadInboundRoutes, updateDidScopeEditorState: updateDidScopeEditorState, updateDidRouteActionButtonState: updateDidRouteActionButtonState, applyDidRouteAction: applyDidRouteAction, addRouteToList: addRouteToList, addScheduleRowFromEditor: addScheduleRowFromEditor, getRuleEditorDirty: function () { return ruleEditorDirty; }, clearRuleEditorDirty: function () { ruleEditorDirty = false; updateRuleTestEmailState(); } };\n})(jQuery);');
+source = source.replace('function renderAlertHistory(items, append) {', 'function renderAlertHistory(items, append) { window.__alertCallFailureSummary = alertCallFailureSummary;');
+source = source.replace('})(jQuery);', `
+window.__hooks = {
+	loadRule: loadRule,
+	saveRule: saveRule,
+	collectRouteList: collectRouteList,
+	updateDidRouteListDefaults: updateDidRouteListDefaults,
+	clearAlertCallCallerIdSessionState: clearAlertCallCallerIdSessionState,
+	setEditingRuleRow: setEditingRuleRow,
+	updateRuleRowActionState: updateRuleRowActionState,
+	updateStartAsEditorState: updateStartAsEditorState,
+	updateAlertCallAndEmailState: updateAlertCallAndEmailState,
+	updateAlertCallCallerIdState: updateAlertCallCallerIdState,
+	updateAlertCallDestinationAddButtonState: updateAlertCallDestinationAddButtonState,
+	addAlertCallDestinationsFromInput: addAlertCallDestinationsFromInput,
+	triggerAlertCallDestinationAdd: triggerAlertCallDestinationAdd,
+	handleAlertCallDestinationInputKeydown: handleAlertCallDestinationInputKeydown,
+	applyAlertCallCallerIdSelfTriggerSafeguard: applyAlertCallCallerIdSelfTriggerSafeguard,
+	applyAlertCallCallerIdSelfTriggerSafeguardForSave: applyAlertCallCallerIdSelfTriggerSafeguardForSave,
+	syncAlertCallCallerIdSafeguardState: syncAlertCallCallerIdSafeguardState,
+	showAlertCallSelfTriggerWarning: showAlertCallSelfTriggerWarning,
+	showMessage: showMessage,
+	alertCallSelfTriggerWarningDurationSeconds: alertCallSelfTriggerWarningDurationSeconds,
+	alertCallSelfTriggerWarningTimeoutMs: alertCallSelfTriggerWarningTimeoutMs,
+	initializeRunNowAvailabilityFromBootstrap: initializeRunNowAvailabilityFromBootstrap,
+	renderAlertCallDestinations: renderAlertCallDestinations,
+	updateAlertCallDestinationHiddenField: updateAlertCallDestinationHiddenField,
+	updateAlertCallStrategyEditorState: updateAlertCallStrategyEditorState,
+	renderAlertHistory: renderAlertHistory,
+	renderIncidents: renderIncidents,
+	loadInboundRoutes: loadInboundRoutes,
+	updateDidScopeEditorState: updateDidScopeEditorState,
+	updateDidRouteActionButtonState: updateDidRouteActionButtonState,
+	applyDidRouteAction: applyDidRouteAction,
+	addRouteToList: addRouteToList,
+	addScheduleRowFromEditor: addScheduleRowFromEditor,
+	getRuleEditorDirty: function () { return ruleEditorDirty; },
+	clearRuleEditorDirty: function () { ruleEditorDirty = false; updateRuleTestEmailState(); },
+	loadPagedTable: loadPagedTable,
+	showMoreTableRows: showMoreTableRows,
+	showLessTableRows: function (selector) { ensureTableBatchState(selector).visibleUnits = tableBatchSize; updateTableRowBatching(selector); },
+	pageState: function (selector) { return tablePageStates[selector]; },
+	batchState: function (selector) { return tableBatchStates[selector]; }
+};
+})(jQuery);`);
 vm.runInContext(source, context, {timeout: 5000});
 context.ajax = function (command, payload, done, onComplete, options) {
 	payload = payload || {};
@@ -3116,6 +3239,68 @@ $('#rc-rule-email-recipients').val('');
 hooks.clearRuleEditorDirty();
 assert($('#rc-rule-test-email').prop('disabled') === true, 'Test Email should remain unavailable without valid recipients even when clean');
 
+const pageRequests = [];
+function alertPage(startId, hasMore) {
+	const rows = [];
+	for (let id = startId; id > startId - 15; id -= 1) {
+		rows.push({id: id, incident_id: id, rule_id: 1, subject_key: 'page-' + id, subject_label: 'page-' + id, action_type: 'gui', event_type: 'initial', delivery_status: 'recorded', stage_n: 0, created_at: '2026-10-01 12:00:00', successful_at: null, failure_detail: '', incident_mode: 'repeat'});
+	}
+	return {status: true, alertHistory: rows, hasMore: hasMore, nextCursor: {time: '2026-10-01 12:00:00', id: startId - 14}};
+}
+const uiPageResponses = [alertPage(321, true), alertPage(306, true), alertPage(291, false)];
+context.window.__testAjaxInterceptor = function (command, payload, done) {
+	pageRequests.push({command: command, payload: Object.assign({}, payload)});
+	assert(command === 'getalerthistory', 'Alert History Show More should use the existing getalerthistory endpoint');
+	const response = uiPageResponses.shift();
+	assert(response && response.alertHistory.length <= 15, 'each response to the browser must contain at most 15 records');
+	done(response);
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.loadPagedTable('#rc-alert-history-table');
+assert($('#rc-alert-history-table tbody tr').length === 15, 'initial affected-table request should render 15 records');
+assert(pageRequests.length === 1 && pageRequests[0].payload.cursor_id === undefined, 'initial page request should not include a continuation cursor');
+hooks.showMoreTableRows('#rc-alert-history-table');
+assert(pageRequests.length === 2 && pageRequests[1].payload.cursor_id === 307, 'first Show More should request the next page after the final initial record');
+assert($('#rc-alert-history-table tbody tr').length === 30, 'first Show More should append 15 records');
+hooks.showLessTableRows('#rc-alert-history-table');
+const rowsAfterShowLess = $('#rc-alert-history-table tbody tr');
+assert(rowsAfterShowLess.length === 30 && rowsAfterShowLess.els.slice(15).every(function (row) { return row.hidden; }), 'Show Less should hide loaded rows without deleting them (rows=' + rowsAfterShowLess.length + ', hidden=' + rowsAfterShowLess.els.slice(15).filter(function (row) { return row.hidden; }).length + ', visibleUnits=' + hooks.batchState('#rc-alert-history-table').visibleUnits + ')');
+hooks.showMoreTableRows('#rc-alert-history-table');
+assert(pageRequests.length === 2 && $('#rc-alert-history-table tbody tr').els.slice(15, 30).every(function (row) { return !row.hidden; }), 'Show More after Show Less should reveal cached rows without another request');
+hooks.showMoreTableRows('#rc-alert-history-table');
+assert(pageRequests.length === 3 && pageRequests[2].payload.cursor_id === 292, 'Show More after cached rows should request the next cursor page');
+assert($('#rc-alert-history-table tbody tr').length === 45 && hooks.pageState('#rc-alert-history-table').hasMore === false, 'last page should append its rows and stop offering more data');
+hooks.showMoreTableRows('#rc-alert-history-table');
+assert(pageRequests.length === 3, 'exhausted table must not issue another page request');
+
+const activePageRequests = [];
+const activePageRowsOne = [];
+for (let id = 300; id > 285; id -= 1) {
+	activePageRowsOne.push({id: id, rule_id: 1, subject_key: 'active-' + id, subject_label: 'active-' + id, mode: 'repeat', state: 'active', updated_at: '2026-10-01 13:00:00'});
+}
+const activePageRowsTwo = [{id: 286, rule_id: 1, subject_key: 'active-286', subject_label: 'active-286', mode: 'repeat', state: 'active', updated_at: '2026-10-01 12:59:00'}];
+for (let id = 285; id > 271; id -= 1) {
+	activePageRowsTwo.push({id: id, rule_id: 1, subject_key: 'active-' + id, subject_label: 'active-' + id, mode: 'repeat', state: 'active', updated_at: '2026-10-01 12:59:00'});
+}
+const activePageResponses = [
+	{status: true, incidents: activePageRowsOne, hasMore: true, nextCursor: {time: '2026-10-01 13:00:00', id: 286}},
+	{status: true, incidents: activePageRowsTwo, hasMore: false, nextCursor: {time: '2026-10-01 12:59:00', id: 272}}
+];
+context.window.__testAjaxInterceptor = function (command, payload, done) {
+	activePageRequests.push({command: command, payload: Object.assign({}, payload)});
+	assert(command === 'getincidents' && payload.view === 'active', 'active incident pages should preserve the active-state filter');
+	const response = activePageResponses.shift();
+	assert(response.incidents.length <= 15, 'active incident response should not exceed 15 rows');
+	done(response);
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.loadPagedTable('#rc-active-incidents-table');
+assert($('#rc-active-incidents-table tbody tr').length === 15, 'active incidents should initially render 15 rows');
+hooks.showMoreTableRows('#rc-active-incidents-table');
+assert(activePageRequests.length === 2 && activePageRequests[1].payload.cursor_id === 286, 'active Show More should continue after the final row from the prior page');
+assert($('#rc-active-incidents-table tbody tr').length === 29, 'a duplicate row caused by a moving updated_at sort key should be suppressed on append');
+assert(hooks.pageState('#rc-active-incidents-table').hasMore === false, 'active table should stop after its backend indicates exhaustion');
+
 process.stdout.write('OK');
 NODE;
 $behaviorOutput = shell_exec('node -e ' . escapeshellarg($behaviorScript));
@@ -3328,7 +3513,7 @@ assert_true((bool)preg_match('/case \'clearalerthistory\': return \$this->rcHand
 assert_true((bool)preg_match('/private function rcHandleClearAlertHistory\(\): array\s*\{[\s\S]*\$repository->clearIncidentAlertHistory\(\)[\s\S]*\'deleted_count\'\s*=>\s*\$deletedCount,[\s\S]*\}/', $controllerSource), 'clear-history handler must clear alert history table and return deleted_count');
 assert_true((bool)preg_match('/const AJAX_COMMANDS = \[[\s\S]*\'getsuppressedincidents\'[\s\S]*\];/', $controllerSource), 'AJAX command allowlist must include getsuppressedincidents');
 assert_true((bool)preg_match('/case \'getsuppressedincidents\': return \$this->rcHandleGetSuppressedIncidents\(\);/', $controllerSource), 'AJAX dispatcher must route getsuppressedincidents to its handler');
-assert_true(strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array') !== false && strpos($controllerSource, "'suppressedIncidents' =>") !== false && strpos($controllerSource, 'loadActiveSuppressedIncidents($asOf, 300)') !== false, 'operational suppressed-incidents handler must return only active suppression rows');
+assert_true(strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array') !== false && strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $cursor, self::TABLE_PAGE_SIZE)') !== false && strpos($controllerSource, "'hasMore' => \$page['hasMore']") !== false, 'operational suppressed-incidents handler must return active rows in cursor pages with hasMore');
 assert_true((bool)preg_match('/const AJAX_COMMANDS = \[[\s\S]*\'clearsuppression\'[\s\S]*\];/', $controllerSource), 'AJAX command allowlist must include clearsuppression');
 assert_true((bool)preg_match('/case \'clearsuppression\': return \$this->rcHandleClearSuppression\(\);/', $controllerSource), 'AJAX dispatcher must route clearsuppression to its handler');
 assert_true(strpos($controllerSource, 'private function rcHandleClearSuppression(): array') !== false && strpos($controllerSource, 'clearSuppressedIncidentHistory') !== false, 'clear-suppression handler must clear the audit row and active suppression state');
@@ -3371,8 +3556,8 @@ assert_true(strpos($jsSource, 'response.languageStatus') === false, 'language re
 assert_true(strpos($jsSource, '$button.find(\'.fa\').addClass(\'fa-spin\');') !== false && strpos($jsSource, '$button.find(\'.rc-refresh-label\').text(\'Refreshing...\');') !== false, 'language refresh button must show a Bootstrap-compatible loading state');
 assert_true(strpos($jsSource, '$button.find(\'.fa\').removeClass(\'fa-spin\');') !== false && strpos($jsSource, '$button.find(\'.rc-refresh-label\').text(\'Refresh\');') !== false, 'language refresh button must clear its loading state after completion');
 assert_true((bool)preg_match('/\.repeatcaller \.rc-alert-call-language-sample \{[\s\S]*width: 30px;[\s\S]*height: 24px;[\s\S]*\}/', $cssSource), 'Sample and Stop controls must retain fixed dimensions across playback states');
-assert_true(strpos($jsSource, "renderAlertHistory((response && response.alertHistory) || []);") !== false, 'Clear Alert History action should refresh the history table from backend response');
-assert_true(strpos($jsSource, "renderSuppressedIncidents(response.suppressedIncidents || []);") !== false, 'suppression-history loader should refresh the table from backend response');
+assert_true(strpos($jsSource, "loadAlertHistory({silent: true});") !== false, 'Clear Alert History action should refresh the history table through the paged loader');
+assert_true(strpos($jsSource, "loadSuppressedIncidents({silent: true});") !== false, 'suppression-history clear action should refresh through the paged loader');
 assert_true(strpos($jsSource, "No rules configured yet.") !== false, 'rules table should render an explicit empty state row when no rules exist');
 assert_true(strpos($jsSource, "No active incidents recorded yet.") !== false, 'active incidents table should render an explicit empty state row when no rows exist');
 assert_true(strpos($jsSource, "No recent incidents recorded yet.") !== false, 'recent incidents table should render an explicit empty state row when no rows exist');
@@ -3430,9 +3615,70 @@ assert_true(strpos($jsSource, "Incident accepted.") !== false, 'accept action to
 assert_true(strpos($jsSource, 'return labels[code] || titleizeFallback(code);') !== false, 'unknown status values should use the safe titleized fallback');
 assert_true(strpos($jsSource, 'var stateLabel = mapCode(rawState, statusLabels) || \'-\';') !== false, 'Active and Recent incidents should compute status through the shared formatter');
 assert_true(substr_count($jsSource, '+ \'<td title="\' + esc(rawState) + \'">\' + esc(stateLabel) + \'</td>\'') === 2, 'Active and Recent incidents should both render the shared formatted status cell');
-assert_true((bool)preg_match('/function renderAlertHistory\(items\) \{[\s\S]*mapCode\(rawStatus, statusLabels\)/', $jsSource), 'Alert History should continue using the same shared status formatter');
+assert_true((bool)preg_match('/function renderAlertHistory\(items, append\) \{[\s\S]*mapCode\(rawStatus, statusLabels\)/', $jsSource), 'Alert History should continue using the same shared status formatter while supporting appended pages');
 
 $csrf = '';
 assert_true($csrf === '', 'missing or invalid csrf token should be rejected by handler guard');
+
+if (session_status() === PHP_SESSION_NONE) {
+	@session_start();
+}
+$savedPageSession = isset($_SESSION) && is_array($_SESSION) ? $_SESSION : [];
+$savedPageRequest = $_REQUEST;
+$savedPageDatabase = FreePBX::Database();
+$suppressionPageDb = make_db();
+FreePBX::setDatabase($suppressionPageDb);
+$_SESSION = [];
+$snapshotAsOf = date('Y-m-d H:i:s');
+$forgedEarlierAsOf = date('Y-m-d H:i:s', strtotime($snapshotAsOf) - 7200);
+$expiredAtSnapshot = date('Y-m-d H:i:s', strtotime($snapshotAsOf) - 3600);
+$validUntil = date('Y-m-d H:i:s', strtotime($snapshotAsOf) + 86400);
+$suppressionPageDb->prepare('INSERT INTO repeatcaller_rules (name, enabled, mode, threshold_count, observation_window_minutes, caller_mode, exclude_withheld, did_scope_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+	->execute(['Suppression Cursor Rule', 1, 'repeat', 2, 60, 'any', 0, 'all']);
+$suppressionRuleId = (int)$suppressionPageDb->lastInsertId();
+$insertSuppressionPage = $suppressionPageDb->prepare('INSERT INTO repeatcaller_incident_suppression_history (related_incident_id, rule_id, rule_name, mode, subject_key, subject_label, matched_call_count, threshold_count, observation_window_minutes, suppression_source, suppression_minutes, suppression_started_at, suppression_expires_at, related_incident_state, detected_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+$insertSuppressionPage->execute([1, $suppressionRuleId, 'Suppression Cursor Rule', 'repeat', 'expired-subject', 'expired-subject', 2, 2, 60, 'suppression', 60, $expiredAtSnapshot, $expiredAtSnapshot, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
+for ($suppressionIndex = 1; $suppressionIndex <= 20; $suppressionIndex++) {
+	$insertSuppressionPage->execute([$suppressionIndex + 1, $suppressionRuleId, 'Suppression Cursor Rule', 'repeat', 'valid-subject-' . $suppressionIndex, 'valid-subject-' . $suppressionIndex, 2, 2, 60, 'suppression', 60, $snapshotAsOf, $validUntil, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
+}
+$paginationController = new \FreePBX\modules\Repeatcaller(new stdClass());
+$suppressedPageMethod = new ReflectionMethod($paginationController, 'rcHandleGetSuppressedIncidents');
+$suppressedPageMethod->setAccessible(true);
+$_REQUEST = [];
+$initialSuppressionPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(true, $initialSuppressionPage['status'], 'initial suppression page should succeed');
+assert_same(15, count($initialSuppressionPage['suppressedIncidents']), 'initial suppression page must return 15 records');
+assert_same(true, $initialSuppressionPage['hasMore'], 'initial suppression page should advertise the remaining records');
+assert_true(!array_key_exists('asOf', $initialSuppressionPage), 'raw snapshot timestamp must not be returned to the browser');
+$validSuppressionCursorToken = $initialSuppressionPage['nextCursorToken'];
+assert_true(is_string($validSuppressionCursorToken) && $validSuppressionCursorToken !== '', 'initial page should issue an authenticated continuation token');
+
+$_REQUEST = ['cursor_token' => $validSuppressionCursorToken];
+$continuedSuppressionPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(true, $continuedSuppressionPage['status'], 'valid signed continuation should retrieve the next page');
+assert_same(5, count($continuedSuppressionPage['suppressedIncidents']), 'valid continuation should return only the remaining active suppressions');
+assert_same(false, $continuedSuppressionPage['hasMore'], 'valid continuation should report exhaustion');
+assert_same(0, count(array_filter($continuedSuppressionPage['suppressedIncidents'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })), 'expired suppression must remain excluded on a valid continuation');
+
+$tokenParts = explode('.', $validSuppressionCursorToken);
+$tokenPayloadJson = base64_decode(strtr($tokenParts[0] . str_repeat('=', (4 - strlen($tokenParts[0]) % 4) % 4), '-_', '+/'), true);
+$tokenPayload = is_string($tokenPayloadJson) ? json_decode($tokenPayloadJson, true) : null;
+assert_true(is_array($tokenPayload), 'signed continuation should contain an encoded cursor payload');
+assert_true(($tokenPayload['purpose'] ?? '') === 'suppressed-incidents-page' && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', (string)($tokenPayload['asOf'] ?? '')) === 1, 'initial suppression page should establish a purpose-bound server snapshot in its signed token');
+$tokenPayload['asOf'] = $forgedEarlierAsOf;
+$forgedPayload = rtrim(strtr(base64_encode((string)json_encode($tokenPayload, JSON_UNESCAPED_SLASHES)), '+/', '-_'), '=');
+$_REQUEST = ['cursor_token' => $forgedPayload . '.' . $tokenParts[1]];
+$forgedSuppressionPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(false, $forgedSuppressionPage['status'], 'changing asOf inside a continuation without a valid signature must be rejected');
+
+$forgedRepositoryPage = (new \FreePBX\modules\Repeatcaller\RepeatCallerRepository($suppressionPageDb))
+	->loadActiveSuppressedIncidentsPage($forgedEarlierAsOf, ['time' => $tokenPayload['time'], 'id' => (int)$tokenPayload['id']], 15);
+assert_true(count(array_filter($forgedRepositoryPage['rows'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })) === 1, 'fixture must prove an earlier forged asOf would expose the expired suppression absent token authentication');
+$_REQUEST = ['cursor_id' => (string)$tokenPayload['id'], 'cursor_time' => (string)$tokenPayload['time'], 'cursor_as_of' => $forgedEarlierAsOf];
+$unsignedSuppressionPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(false, $unsignedSuppressionPage['status'], 'legacy unsigned cursor fields, including cursor_as_of, must be rejected');
+FreePBX::setDatabase($savedPageDatabase);
+$_REQUEST = $savedPageRequest;
+$_SESSION = $savedPageSession;
 
 echo "repeat admin contract tests passed\n";

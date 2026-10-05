@@ -620,6 +620,16 @@ final class RepeatCallerRepository {
 	}
 
 	public function loadIncidents(string $view = 'active', int $limit = 200): array {
+		return $this->queryIncidents($view, $limit, null);
+	}
+
+	public function loadIncidentsPage(string $view = 'active', ?array $cursor = null, int $pageSize = 15): array {
+		$pageSize = max(1, min(15, $pageSize));
+		$rows = $this->queryIncidents($view, $pageSize + 1, $cursor);
+		return $this->buildCursorPage($rows, $pageSize, 'updated_at');
+	}
+
+	private function queryIncidents(string $view, int $limit, ?array $cursor): array {
 		if ($view === 'active') {
 			$states = ['active'];
 		} elseif ($view === 'accepted') {
@@ -628,6 +638,20 @@ final class RepeatCallerRepository {
 			$states = ['active', 'accepted', 'suppressed', 'expired', 'closed'];
 		}
 		$placeholders = $this->placeholders($states);
+		$cursorSql = '';
+		$parameters = $states;
+		if (is_array($cursor) && (int)($cursor['id'] ?? 0) > 0) {
+			$cursorId = (int)$cursor['id'];
+			if (($cursor['time'] ?? null) === null) {
+				$cursorSql = ' AND i.updated_at IS NULL AND i.id < ?';
+				$parameters[] = $cursorId;
+			} else {
+				$cursorSql = ' AND (i.updated_at < ? OR i.updated_at IS NULL OR (i.updated_at = ? AND i.id < ?))';
+				$parameters[] = (string)$cursor['time'];
+				$parameters[] = (string)$cursor['time'];
+				$parameters[] = $cursorId;
+			}
+		}
 		$stmt = $this->pdo->prepare(
 			'SELECT i.id, i.rule_id, i.subject_key, i.subject_label, i.caller_normalized, i.caller_display,
 				i.withheld_caller, i.mode, i.threshold_count, i.observation_window_minutes, i.first_matched_at, i.last_matched_at, i.matched_call_count,
@@ -638,10 +662,11 @@ final class RepeatCallerRepository {
 			 FROM repeatcaller_incidents i
 			 JOIN repeatcaller_rules r ON r.id = i.rule_id
 			 WHERE i.state IN (' . $placeholders . ')
+			 ' . $cursorSql . '
 			 ORDER BY i.updated_at DESC, i.id DESC
 			 LIMIT ' . (int)$limit
 		);
-		$stmt->execute($states);
+		$stmt->execute($parameters);
 
 		return $stmt->fetchAll(PDO::FETCH_ASSOC);
 	}
@@ -736,6 +761,30 @@ final class RepeatCallerRepository {
 	}
 
 	public function loadIncidentAlertHistory(int $limit = 200): array {
+		return $this->queryIncidentAlertHistory($limit, null);
+	}
+
+	public function loadIncidentAlertHistoryPage(?array $cursor = null, int $pageSize = 15): array {
+		$pageSize = max(1, min(15, $pageSize));
+		$rows = $this->queryIncidentAlertHistory($pageSize + 1, $cursor);
+		return $this->buildCursorPage($rows, $pageSize, 'created_at');
+	}
+
+	private function queryIncidentAlertHistory(int $limit, ?array $cursor): array {
+		$cursorSql = '';
+		$parameters = [];
+		if (is_array($cursor) && (int)($cursor['id'] ?? 0) > 0) {
+			$cursorId = (int)$cursor['id'];
+			if (($cursor['time'] ?? null) === null) {
+				$cursorSql = ' AND h.created_at IS NULL AND h.id < ?';
+				$parameters[] = $cursorId;
+			} else {
+				$cursorSql = ' AND (h.created_at < ? OR (h.created_at = ? AND h.id < ?))';
+				$parameters[] = (string)$cursor['time'];
+				$parameters[] = (string)$cursor['time'];
+				$parameters[] = $cursorId;
+			}
+		}
 		$stmt = $this->pdo->prepare(
 			'SELECT h.id, h.incident_id, h.rule_id, h.subject_key, h.subject_label,
 				h.action_type, h.event_type, h.stage_n, h.recipient, h.delivery_status,
@@ -752,10 +801,11 @@ final class RepeatCallerRepository {
 			 FROM repeatcaller_incident_alert_history h
 			 LEFT JOIN repeatcaller_incidents i ON i.id = h.incident_id
 			 LEFT JOIN repeatcaller_rules r ON r.id = h.rule_id
+			 WHERE 1 = 1' . $cursorSql . '
 			 ORDER BY h.created_at DESC, h.id DESC
 			 LIMIT ' . (int)$limit
 		);
-		$stmt->execute();
+		$stmt->execute($parameters);
 
 		return $stmt->fetchAll(PDO::FETCH_ASSOC);
 	}
@@ -779,6 +829,32 @@ final class RepeatCallerRepository {
 	}
 
 	public function loadActiveSuppressedIncidents(string $asOf, int $limit = 200): array {
+		return $this->queryActiveSuppressedIncidents($asOf, $limit, null);
+	}
+
+	public function loadActiveSuppressedIncidentsPage(string $asOf, ?array $cursor = null, int $pageSize = 15): array {
+		$pageSize = max(1, min(15, $pageSize));
+		$rows = $this->queryActiveSuppressedIncidents($asOf, $pageSize + 1, $cursor);
+		$page = $this->buildCursorPage($rows, $pageSize, 'created_at');
+		$page['asOf'] = $asOf;
+		return $page;
+	}
+
+	private function queryActiveSuppressedIncidents(string $asOf, int $limit, ?array $cursor): array {
+		$cursorSql = '';
+		$parameters = [$asOf];
+		if (is_array($cursor) && (int)($cursor['id'] ?? 0) > 0) {
+			$cursorId = (int)$cursor['id'];
+			if (($cursor['time'] ?? null) === null) {
+				$cursorSql = ' AND h.created_at IS NULL AND h.id < ?';
+				$parameters[] = $cursorId;
+			} else {
+				$cursorSql = ' AND (h.created_at < ? OR (h.created_at = ? AND h.id < ?))';
+				$parameters[] = (string)$cursor['time'];
+				$parameters[] = (string)$cursor['time'];
+				$parameters[] = $cursorId;
+			}
+		}
 		$stmt = $this->pdo->prepare(
 			'SELECT h.id, h.related_incident_id, h.rule_id, h.rule_name, h.mode, h.subject_key, h.subject_label,
 				h.caller_normalized, h.caller_display, h.inbound_route_key, h.inbound_route_label, h.did_value,
@@ -789,13 +865,30 @@ final class RepeatCallerRepository {
 			 FROM repeatcaller_incident_suppression_history h
 			 LEFT JOIN repeatcaller_rules r ON r.id = h.rule_id
 			 WHERE (h.cleared_at IS NULL OR h.cleared_at IN (\'\', \'0000-00-00\', \'0000-00-00 00:00:00\'))
-			   AND h.suppression_expires_at > ?
+			   AND h.suppression_expires_at > ?' . $cursorSql . '
 			 ORDER BY h.created_at DESC, h.id DESC
 			 LIMIT ' . (int)$limit
 		);
-		$stmt->execute([$asOf]);
+		$stmt->execute($parameters);
 
 		return $stmt->fetchAll(PDO::FETCH_ASSOC);
+	}
+
+	private function buildCursorPage(array $rows, int $pageSize, string $timeColumn): array {
+		$hasMore = count($rows) > $pageSize;
+		if ($hasMore) {
+			array_pop($rows);
+		}
+		$last = $rows ? $rows[count($rows) - 1] : null;
+
+		return [
+			'rows' => $rows,
+			'hasMore' => $hasMore,
+			'nextCursor' => is_array($last) ? [
+				'time' => isset($last[$timeColumn]) ? (string)$last[$timeColumn] : null,
+				'id' => (int)$last['id'],
+			] : null,
+		];
 	}
 
 	public function loadUiChangeTokens(): array {
