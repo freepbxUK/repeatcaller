@@ -15,13 +15,12 @@ class Repeatcaller implements \BMO {
 	/** Fallback only. Authoritative version lives in module.xml. */
 	const VERSION = '1.1.0';
 	const CSRF_SESSION_KEY = 'repeatcaller_csrf_token';
-	const SUPPRESSION_CURSOR_KEY_SESSION_KEY = 'repeatcaller_suppression_cursor_key';
 	const REPEAT_MODE_NEVER = 'never';
 	const REPEAT_MODE_FIVE_MINUTES = '5m';
 	const REPEAT_MODE_HOURLY = 'hourly';
 	const REPEAT_MODE_DAILY = 'daily';
 	const REPEAT_MODE_ESCALATING = 'escalating';
-	const TABLE_PAGE_SIZE = 15;
+	const TABLE_PAGE_SIZE = 25;
 	const AJAX_COMMANDS = [
 		'getenginestatus',
 		'getalertcalllanguagestatus',
@@ -40,6 +39,7 @@ class Repeatcaller implements \BMO {
 		'getalerthistory',
 		'clearsuppression',
 		'getuichangetoken',
+		'saveuisetting',
 		'setsnooze',
 		'resumemonitoring',
 		'prunehistory',
@@ -58,6 +58,14 @@ class Repeatcaller implements \BMO {
 		'incident_history_prune_policy' => 'daily',
 		'alert_history_prune_policy' => 'daily',
 		'suppression_history_prune_policy' => 'daily',
+		'ui_active_incidents_sort_key' => 'updated',
+		'ui_active_incidents_sort_dir' => 'desc',
+		'ui_recent_incidents_sort_key' => 'updated',
+		'ui_recent_incidents_sort_dir' => 'desc',
+		'ui_suppressed_incidents_sort_key' => 'time',
+		'ui_suppressed_incidents_sort_dir' => 'desc',
+		'ui_alert_history_sort_key' => 'time',
+		'ui_alert_history_sort_dir' => 'desc',
 	];
 
 	/** @var \FreePBX */
@@ -260,6 +268,7 @@ class Repeatcaller implements \BMO {
 				case 'getalerthistory': return $this->rcHandleGetAlertHistory();
 				case 'clearsuppression': return $this->rcHandleClearSuppression();
 				case 'getuichangetoken': return $this->rcHandleGetUiChangeToken();
+				case 'saveuisetting': return $this->rcHandleSaveUiSetting();
 				case 'setsnooze': return $this->rcHandleSetSnooze();
 				case 'resumemonitoring': return $this->rcHandleResumeMonitoring();
 				case 'prunehistory': return $this->rcHandlePruneHistory();
@@ -848,38 +857,33 @@ class Repeatcaller implements \BMO {
 	private function rcHandleGetIncidents(): array {
 		$view = strtolower(trim((string)($_REQUEST['view'] ?? 'active')));
 		if (!in_array($view, ['active', 'recent', 'accepted'], true)) {
-			$view = 'active';
+			return ['status' => false, 'message' => _('Invalid incident table view.')];
 		}
-		if ($view === 'recent') {
-			$view = 'accepted';
+		$table = $view === 'active' ? 'active_incidents' : 'recent_incidents';
+		$repositoryView = $view === 'active' ? 'active' : 'accepted';
+		$offset = $this->requestTableOffset();
+		$sortKey = $this->requestTableSortKey($table);
+		$sortDirection = $this->requestTableSortDirection($table);
+		if ($offset === null || $sortKey === null || $sortDirection === null) {
+			return ['status' => false, 'message' => _('Invalid table pagination or sorting request.')];
 		}
-		$page = $this->rcRepository()->loadIncidentsPage($view, $this->requestTableCursor(), self::TABLE_PAGE_SIZE);
-		return ['status' => true, 'incidents' => $page['rows'], 'hasMore' => $page['hasMore'], 'nextCursor' => $page['nextCursor']];
+		$page = $this->rcRepository()->loadIncidentsPage($repositoryView, $offset, $sortKey, $sortDirection);
+		return ['status' => true, 'incidents' => $page['rows'], 'total' => $page['total'], 'offset' => $page['offset'], 'limit' => $page['limit']];
 	}
 
 	private function rcHandleGetSuppressedIncidents(): array {
-		$cursor = null;
-		$asOf = $this->now();
-		$continuationToken = isset($_REQUEST['cursor_token']) ? trim((string)$_REQUEST['cursor_token']) : '';
-		$hasUnsignedCursorFields = isset($_REQUEST['cursor_id']) || isset($_REQUEST['cursor_time']) || isset($_REQUEST['cursor_as_of']);
-		if ($continuationToken !== '') {
-			if ($hasUnsignedCursorFields) {
-				return ['status' => false, 'message' => _('Invalid table cursor.')];
-			}
-			$continuation = $this->decodeSuppressionCursorToken($continuationToken);
-			if ($continuation === null) {
-				return ['status' => false, 'message' => _('Invalid table cursor.')];
-			}
-			$cursor = $continuation['cursor'];
-			$asOf = $continuation['asOf'];
-		} elseif ($hasUnsignedCursorFields || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $asOf)) {
-			return ['status' => false, 'message' => _('Invalid table cursor.')];
+		if (isset($_REQUEST['cursor_id']) || isset($_REQUEST['cursor_time']) || isset($_REQUEST['cursor_as_of']) || isset($_REQUEST['cursor_token'])) {
+			return ['status' => false, 'message' => _('Invalid table pagination request.')];
 		}
-		$page = $this->rcRepository()->loadActiveSuppressedIncidentsPage($asOf, $cursor, self::TABLE_PAGE_SIZE);
-		$nextCursorToken = !empty($page['hasMore']) && is_array($page['nextCursor'])
-			? $this->createSuppressionCursorToken($page['nextCursor'], $page['asOf'])
-			: null;
-		return ['status' => true, 'suppressedIncidents' => $page['rows'], 'hasMore' => $page['hasMore'], 'nextCursorToken' => $nextCursorToken];
+		$offset = $this->requestTableOffset();
+		$sortKey = $this->requestTableSortKey('suppressed_incidents');
+		$sortDirection = $this->requestTableSortDirection('suppressed_incidents');
+		if ($offset === null || $sortKey === null || $sortDirection === null) {
+			return ['status' => false, 'message' => _('Invalid table pagination or sorting request.')];
+		}
+		$asOf = $this->now();
+		$page = $this->rcRepository()->loadActiveSuppressedIncidentsPage($asOf, $offset, $sortKey, $sortDirection);
+		return ['status' => true, 'suppressedIncidents' => $page['rows'], 'total' => $page['total'], 'offset' => $page['offset'], 'limit' => $page['limit']];
 	}
 
 	private function rcHandleClearSuppression(): array {
@@ -927,8 +931,28 @@ class Repeatcaller implements \BMO {
 	}
 
 	private function rcHandleGetAlertHistory(): array {
-		$page = $this->rcRepository()->loadIncidentAlertHistoryPage($this->requestTableCursor(), self::TABLE_PAGE_SIZE);
-		return ['status' => true, 'alertHistory' => $page['rows'], 'hasMore' => $page['hasMore'], 'nextCursor' => $page['nextCursor']];
+		$offset = $this->requestTableOffset();
+		$sortKey = $this->requestTableSortKey('alert_history');
+		$sortDirection = $this->requestTableSortDirection('alert_history');
+		if ($offset === null || $sortKey === null || $sortDirection === null) {
+			return ['status' => false, 'message' => _('Invalid table pagination or sorting request.')];
+		}
+		$page = $this->rcRepository()->loadIncidentAlertHistoryPage($offset, $sortKey, $sortDirection);
+		return ['status' => true, 'alertHistory' => $page['rows'], 'total' => $page['total'], 'offset' => $page['offset'], 'limit' => $page['limit']];
+	}
+
+	private function rcHandleSaveUiSetting(): array {
+		$table = isset($_REQUEST['table']) && is_string($_REQUEST['table']) ? $_REQUEST['table'] : '';
+		$sortKey = isset($_REQUEST['sort_key']) && is_string($_REQUEST['sort_key']) ? $_REQUEST['sort_key'] : '';
+		$sortDirection = isset($_REQUEST['sort_direction']) && is_string($_REQUEST['sort_direction']) ? strtolower($_REQUEST['sort_direction']) : '';
+		$sortKeys = $this->tableSortKeys();
+		if (!isset($sortKeys[$table]) || !in_array($sortKey, $sortKeys[$table], true) || !in_array($sortDirection, ['asc', 'desc'], true)) {
+			return ['status' => false, 'message' => _('Invalid table sorting preference.')];
+		}
+		[$sortSetting, $directionSetting] = $this->tableSettingKeys($table);
+		$this->setSetting($sortSetting, $sortKey);
+		$this->setSetting($directionSetting, $sortDirection);
+		return ['status' => true, 'sortKey' => $sortKey, 'sortDirection' => $sortDirection];
 	}
 
 	private function rcHandleGetUiChangeToken(): array {
@@ -1088,6 +1112,13 @@ class Repeatcaller implements \BMO {
 		$settings['alert_history_prune_policy'] = $this->normalisePrunePolicy((string)$settings['alert_history_prune_policy']);
 		$settings['suppression_history_prune_policy'] = $this->normalisePrunePolicy((string)$settings['suppression_history_prune_policy']);
 		$settings['enabled'] = (string)$settings['enabled'] === '1' ? '1' : '0';
+		foreach ($this->tableSortKeys() as $table => $allowedKeys) {
+			[$sortSetting, $directionSetting] = $this->tableSettingKeys($table);
+			if (!in_array($settings[$sortSetting], $allowedKeys, true)) {
+				$settings[$sortSetting] = $this->settingsDefaults[$sortSetting];
+			}
+			$settings[$directionSetting] = strtolower((string)$settings[$directionSetting]) === 'asc' ? 'asc' : 'desc';
+		}
 
 		return $settings;
 	}
@@ -1812,93 +1843,72 @@ class Repeatcaller implements \BMO {
 		return ctype_digit($value) && (int)$value > 0 ? (int)$value : 0;
 	}
 
-	private function requestTableCursor(): ?array {
-		$rawId = isset($_REQUEST['cursor_id']) ? trim((string)$_REQUEST['cursor_id']) : '';
-		if ($rawId === '') {
+	private function requestTableOffset(): ?int {
+		if (!array_key_exists('offset', $_REQUEST)) {
+			return 0;
+		}
+		$value = $_REQUEST['offset'];
+		if (is_int($value)) {
+			return $value >= 0 ? $value : null;
+		}
+		if (!is_string($value) || !preg_match('/^(0|[1-9][0-9]*)$/D', $value)) {
 			return null;
 		}
-		$cursorId = $this->positiveRequestId('cursor_id');
-		$rawTime = isset($_REQUEST['cursor_time']) ? trim((string)$_REQUEST['cursor_time']) : '';
-		if ($cursorId <= 0 || ($rawTime !== '' && !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $rawTime))) {
-			throw new \InvalidArgumentException('Invalid table cursor.');
+		$maximum = (string)PHP_INT_MAX;
+		if (strlen($value) > strlen($maximum) || (strlen($value) === strlen($maximum) && strcmp($value, $maximum) > 0)) {
+			return null;
 		}
-		return ['time' => $rawTime !== '' ? $rawTime : null, 'id' => $cursorId];
+		return (int)$value;
 	}
 
-	private function createSuppressionCursorToken(array $cursor, string $asOf): string {
-		$key = $this->suppressionCursorSigningKey();
-		$payload = json_encode([
-			'purpose' => 'suppressed-incidents-page',
-			'version' => 1,
-			'asOf' => $asOf,
-			'time' => $cursor['time'] ?? null,
-			'id' => (int)($cursor['id'] ?? 0),
-		], JSON_UNESCAPED_SLASHES);
-		if (!is_string($payload)) {
-			throw new \RuntimeException('Unable to encode suppression cursor.');
+	private function requestTableSortKey(string $table): ?string {
+		$sortKeys = $this->tableSortKeys();
+		if (!isset($sortKeys[$table])) {
+			return null;
 		}
-		$encodedPayload = $this->base64UrlEncode($payload);
-		$signature = hash_hmac('sha256', $encodedPayload, $key, true);
-		return $encodedPayload . '.' . $this->base64UrlEncode($signature);
+		[$sortSetting] = $this->tableSettingKeys($table);
+		if (!array_key_exists('sort_key', $_REQUEST)) {
+			return (string)$this->rcSettings()[$sortSetting];
+		}
+		$value = $_REQUEST['sort_key'];
+		return is_string($value) && in_array($value, $sortKeys[$table], true) ? $value : null;
 	}
 
-	private function decodeSuppressionCursorToken(string $token): ?array {
-		if (strlen($token) > 2048 || !preg_match('/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/D', $token, $matches)) {
+	private function requestTableSortDirection(string $table): ?string {
+		if (!isset($this->tableSortKeys()[$table])) {
 			return null;
 		}
-		try {
-			$key = $this->suppressionCursorSigningKey();
-		} catch (\Throwable $e) {
+		[, $directionSetting] = $this->tableSettingKeys($table);
+		if (!array_key_exists('sort_direction', $_REQUEST)) {
+			return (string)$this->rcSettings()[$directionSetting];
+		}
+		$value = $_REQUEST['sort_direction'];
+		if (!is_string($value) || !in_array(strtolower($value), ['asc', 'desc'], true)) {
 			return null;
 		}
-		$expectedSignature = hash_hmac('sha256', $matches[1], $key, true);
-		$providedSignature = $this->base64UrlDecode($matches[2]);
-		if ($providedSignature === null || !hash_equals($expectedSignature, $providedSignature)) {
-			return null;
-		}
-		$payloadJson = $this->base64UrlDecode($matches[1]);
-		$payload = $payloadJson !== null ? json_decode($payloadJson, true) : null;
-		if (!is_array($payload)
-			|| ($payload['purpose'] ?? null) !== 'suppressed-incidents-page'
-			|| (int)($payload['version'] ?? 0) !== 1
-			|| !is_string($payload['asOf'] ?? null)
-			|| !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $payload['asOf'])
-			|| !is_int($payload['id'] ?? null)
-			|| $payload['id'] <= 0
-			|| !(($payload['time'] ?? null) === null || (is_string($payload['time']) && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $payload['time'])))) {
-			return null;
-		}
+		return strtolower($value);
+	}
+
+	private function tableSortKeys(): array {
 		return [
-			'asOf' => $payload['asOf'],
-			'cursor' => ['time' => $payload['time'] ?? null, 'id' => $payload['id']],
+			'active_incidents' => ['id', 'first', 'rule', 'mode', 'subject', 'caller', 'last', 'count', 'threshold', 'window', 'status', 'updated'],
+			'recent_incidents' => ['id', 'created', 'rule', 'mode', 'subject', 'status', 'accepted_by', 'suppression_expires', 'updated'],
+			'suppressed_incidents' => ['time', 'rule', 'mode', 'subject', 'count', 'threshold_window', 'suppressed_until', 'cleared', 'reason', 'related_incident'],
+			'alert_history' => ['id', 'time', 'rule', 'mode', 'subject', 'event', 'action', 'status', 'stage', 'success', 'failure_detail'],
 		];
 	}
 
-	private function suppressionCursorSigningKey(): string {
-		if (!$this->ensureSessionForCsrfWrite()) {
-			throw new \RuntimeException('Session unavailable for suppression cursor signing.');
+	private function tableSettingKeys(string $table): array {
+		$prefixes = [
+			'active_incidents' => 'ui_active_incidents',
+			'recent_incidents' => 'ui_recent_incidents',
+			'suppressed_incidents' => 'ui_suppressed_incidents',
+			'alert_history' => 'ui_alert_history',
+		];
+		if (!isset($prefixes[$table])) {
+			throw new \InvalidArgumentException('Unknown incident table preference.');
 		}
-		$key = isset($_SESSION[self::SUPPRESSION_CURSOR_KEY_SESSION_KEY])
-			? (string)$_SESSION[self::SUPPRESSION_CURSOR_KEY_SESSION_KEY]
-			: '';
-		if (!preg_match('/^[a-f0-9]{64}$/D', $key)) {
-			$key = bin2hex(random_bytes(32));
-			$_SESSION[self::SUPPRESSION_CURSOR_KEY_SESSION_KEY] = $key;
-		}
-		return $key;
-	}
-
-	private function base64UrlEncode(string $value): string {
-		return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
-	}
-
-	private function base64UrlDecode(string $value): ?string {
-		$remainder = strlen($value) % 4;
-		if ($remainder === 1) {
-			return null;
-		}
-		$decoded = base64_decode(strtr($value . str_repeat('=', (4 - $remainder) % 4), '-_', '+/'), true);
-		return $decoded === false ? null : $decoded;
+		return [$prefixes[$table] . '_sort_key', $prefixes[$table] . '_sort_dir'];
 	}
 
 	private function acquireReconcileLock(): bool {

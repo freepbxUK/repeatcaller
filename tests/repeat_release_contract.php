@@ -104,7 +104,8 @@ foreach ($allowedCommands as $command) {
 	assert_true($module->ajaxRequest($command, $dummySetting), "allowlisted command '{$command}' should be accepted by ajaxRequest");
 }
 assert_true(!$module->ajaxRequest('registrationwatchstatus', $dummySetting), 'unknown/legacy command must not be accepted by ajaxRequest');
-assert_true(!$module->ajaxRequest('saveuisetting', $dummySetting), 'commands absent from the allowlist must not be accepted, even if plausible-sounding');
+assert_true($module->ajaxRequest('saveuisetting', $dummySetting), 'validated UI sort preferences should be accepted by ajaxRequest');
+assert_true(!$module->ajaxRequest('saveuipreference', $dummySetting), 'commands absent from the allowlist must not be accepted, even if plausible-sounding');
 
 $controllerSource = file_get_contents($root . '/Repeatcaller.class.php');
 assert_true($controllerSource !== false, 'controller source should be readable');

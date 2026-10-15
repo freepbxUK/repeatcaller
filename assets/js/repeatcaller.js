@@ -34,15 +34,14 @@
 	var currentAlertHistory = [];
 	var currentEngineLastSuccessfulRun = '';
 	var tableBatchSize = 15;
+	var tablePageSize = 25;
 	var tableBatchStates = {};
 	var tablePageStates = {};
 	var tablePageGeneration = {};
+	var tablePreferenceQueues = {};
+	var tablePaginationElements = {};
 	var tableBatchSelectors = [
 		'#rc-rules-table',
-		'#rc-active-incidents-table',
-		'#rc-suppressed-incidents-table',
-		'#rc-recent-incidents-table',
-		'#rc-alert-history-table',
 		'#rc-schedule-table'
 	];
 	var ruleStatusTimers = {};
@@ -834,7 +833,28 @@
 
 	function ensureTablePageState(selector) {
 		if (!tablePageStates[selector]) {
-			tablePageStates[selector] = {cursor: null, hasMore: false, loading: false, asOf: null};
+			var config = pagedTableConfig(selector);
+			var settings = (window.repeatCallerBootstrap || {}).globalSettings || {};
+			var sortKey = String(settings[config.sortKeySetting] || config.defaultSortKey);
+			var sortDirection = String(settings[config.sortDirectionSetting] || config.defaultSortDirection).toLowerCase();
+			if ($.inArray(sortKey, config.sortKeys) === -1) {
+				sortKey = config.defaultSortKey;
+			}
+			if (sortDirection !== 'asc' && sortDirection !== 'desc') {
+				sortDirection = config.defaultSortDirection;
+			}
+			tablePageStates[selector] = {
+				sortKey: sortKey,
+				sortDirection: sortDirection,
+				savedSortKey: sortKey,
+				savedSortDirection: sortDirection,
+				offset: 0,
+				limit: tablePageSize,
+				total: 0,
+				rowCount: 0,
+				loading: false,
+				refreshRequested: false
+			};
 		}
 		return tablePageStates[selector];
 	}
@@ -935,121 +955,279 @@
 		});
 	}
 
+	function showMoreTableRows(selector) {
+		if ($.inArray(selector, tableBatchSelectors) === -1) {
+			return;
+		}
+		var state = ensureTableBatchState(selector);
+		state.visibleUnits += tableBatchSize;
+		updateTableRowBatching(selector);
+	}
+
+	function showLessTableRows(selector) {
+		if ($.inArray(selector, tableBatchSelectors) === -1) {
+			return;
+		}
+		var state = ensureTableBatchState(selector);
+		state.visibleUnits = tableBatchSize;
+		updateTableRowBatching(selector);
+	}
+
+	function tableBatchSelectorFromControl($control) {
+		var tableId = $.trim(String($control.closest('.rc-table-batch-controls').attr('data-table-id') || ''));
+		var selector = tableId ? '#' + tableId : '';
+		return $.inArray(selector, tableBatchSelectors) !== -1 ? selector : '';
+	}
+
 	function pagedTableConfig(selector) {
 		if (selector === '#rc-active-incidents-table') {
 			return {
+				table: 'active_incidents',
 				command: 'getincidents',
 				payload: {view: 'active'},
 				rowsKey: 'incidents',
-				render: function (rows, append) { renderIncidents(selector, rows, true, append); }
+				defaultSortKey: 'updated',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_active_incidents_sort_key',
+				sortDirectionSetting: 'ui_active_incidents_sort_dir',
+				sortKeys: ['id', 'first', 'rule', 'mode', 'subject', 'caller', 'last', 'count', 'threshold', 'window', 'status', 'updated'],
+				render: function (rows) { renderIncidents(selector, rows, true, false); }
 			};
 		}
 		if (selector === '#rc-recent-incidents-table') {
 			return {
+				table: 'recent_incidents',
 				command: 'getincidents',
 				payload: {view: 'accepted'},
 				rowsKey: 'incidents',
-				render: function (rows, append) { renderIncidents(selector, rows, false, append); }
+				defaultSortKey: 'updated',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_recent_incidents_sort_key',
+				sortDirectionSetting: 'ui_recent_incidents_sort_dir',
+				sortKeys: ['id', 'created', 'rule', 'mode', 'subject', 'status', 'accepted_by', 'suppression_expires', 'updated'],
+				render: function (rows) { renderIncidents(selector, rows, false, false); }
 			};
 		}
 		if (selector === '#rc-suppressed-incidents-table') {
 			return {
+				table: 'suppressed_incidents',
 				command: 'getsuppressedincidents',
 				payload: {},
 				rowsKey: 'suppressedIncidents',
-				signedCursor: true,
-				tokenKey: 'nextCursorToken',
-				render: function (rows, append) { renderSuppressedIncidents(rows, append); }
+				defaultSortKey: 'time',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_suppressed_incidents_sort_key',
+				sortDirectionSetting: 'ui_suppressed_incidents_sort_dir',
+				sortKeys: ['time', 'rule', 'mode', 'subject', 'count', 'threshold_window', 'suppressed_until', 'cleared', 'reason', 'related_incident'],
+				render: function (rows) { renderSuppressedIncidents(rows, false); }
 			};
 		}
 		if (selector === '#rc-alert-history-table') {
 			return {
+				table: 'alert_history',
 				command: 'getalerthistory',
 				payload: {},
 				rowsKey: 'alertHistory',
-				render: function (rows, append) { renderAlertHistory(rows, append); }
+				defaultSortKey: 'time',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_alert_history_sort_key',
+				sortDirectionSetting: 'ui_alert_history_sort_dir',
+				sortKeys: ['id', 'time', 'rule', 'mode', 'subject', 'event', 'action', 'status', 'stage', 'success', 'failure_detail'],
+				render: function (rows) { renderAlertHistory(rows, false); }
 			};
 		}
 		return null;
 	}
 
-	function requestTablePage(selector, append, options) {
+	function tablePaginationControls(selector) {
+		var $table = $(selector);
+		if (!$table.length) {
+			return $();
+		}
+		if (tablePaginationElements[selector]) {
+			return tablePaginationElements[selector];
+		}
+		var tableId = String($table.attr('id') || '');
+		var $controls = $table.closest('.panel-body').find('.rc-history-pagination[data-table-id="' + tableId + '"]').first();
+		if (!$controls.length) {
+			$controls = $('<div class="rc-history-pagination" role="group"/>').attr('data-table-id', tableId);
+			$controls.append($('<button type="button" class="btn btn-xs btn-default rc-page-previous" aria-label="Previous page">‹</button>'));
+			$controls.append($('<span class="rc-pagination-range" aria-live="polite"/>'));
+			$controls.append($('<button type="button" class="btn btn-xs btn-default rc-page-next" aria-label="Next page">›</button>'));
+			var $anchor = $table.closest('.table-responsive');
+			if ($anchor.length) {
+				$anchor.before($controls);
+			} else {
+				$table.before($controls);
+			}
+		}
+		tablePaginationElements[selector] = $controls;
+		return $controls;
+	}
+
+	function updateHistoryPagination(selector) {
+		var config = pagedTableConfig(selector);
+		if (!config) {
+			return;
+		}
+		var state = ensureTablePageState(selector);
+		var $controls = tablePaginationControls(selector);
+		if (!$controls.length) {
+			return;
+		}
+		var first = state.total > 0 ? state.offset + 1 : 0;
+		var last = Math.min(state.offset + state.rowCount, state.total);
+		$controls.find('.rc-pagination-range').text('Showing ' + first + ' to ' + last + ' of ' + state.total);
+		$controls.find('.rc-page-previous').prop('disabled', state.loading || state.offset <= 0);
+		$controls.find('.rc-page-next').prop('disabled', state.loading || state.offset + state.limit >= state.total);
+		$controls.toggleClass('rc-pagination-loading', state.loading);
+	}
+
+	function updateSortHeaders(selector) {
+		var config = pagedTableConfig(selector);
+		if (!config) {
+			return;
+		}
+		var state = ensureTablePageState(selector);
+		$(selector + ' thead th').each(function (index) {
+			var $heading = $(this);
+			var key = config.sortKeys[index];
+			if (!key) {
+				$heading.removeAttr('data-sort-key tabindex role aria-sort').removeClass('rc-sortable rc-sort-active');
+				$heading.find('.rc-sort-arrow').remove();
+				return;
+			}
+			$heading.attr('data-sort-key', key).attr('tabindex', '0').addClass('rc-sortable');
+			$heading.find('.rc-sort-arrow').remove();
+			if (key === state.sortKey) {
+				$heading.addClass('rc-sort-active').attr('aria-sort', state.sortDirection === 'asc' ? 'ascending' : 'descending');
+				$heading.append($('<span class="rc-sort-arrow" aria-hidden="true"/>').text(state.sortDirection === 'asc' ? '▲' : '▼'));
+			} else {
+				$heading.removeClass('rc-sort-active').attr('aria-sort', 'none');
+			}
+		});
+	}
+
+	function requestTablePage(selector, options, force) {
 		var config = pagedTableConfig(selector);
 		if (!config) {
 			return null;
 		}
 		var page = ensureTablePageState(selector);
-		if (page.loading || (append && !page.hasMore)) {
+		if (page.loading && !force) {
 			return null;
 		}
 		page.loading = true;
-		var generation = tablePageGeneration[selector] || 0;
-		updateTableRowBatching(selector);
+		var generation = (tablePageGeneration[selector] || 0) + 1;
+		tablePageGeneration[selector] = generation;
+		updateHistoryPagination(selector);
 		var payload = {};
 		$.each(config.payload, function (key, value) { payload[key] = value; });
-		if (config.signedCursor && page.cursorToken) {
-			payload.cursor_token = page.cursorToken;
-		} else if (page.cursor) {
-			payload.cursor_time = page.cursor.time === null ? '' : page.cursor.time;
-			payload.cursor_id = page.cursor.id;
-		}
+		payload.offset = page.offset;
+		payload.sort_key = page.sortKey;
+		payload.sort_direction = page.sortDirection;
+		var received = false;
 		return ajax(config.command, payload, function (response) {
 			if (generation !== (tablePageGeneration[selector] || 0) || tablePageStates[selector] !== page) {
 				return;
 			}
 			var rows = $.isArray(response[config.rowsKey]) ? response[config.rowsKey] : [];
-			if (append && (selector === '#rc-active-incidents-table' || selector === '#rc-recent-incidents-table')) {
-				var existingIds = {};
-				$.each(selector === '#rc-active-incidents-table' ? currentActiveIncidents : currentAcceptedIncidents, function (_, item) {
-					existingIds[String(item.id)] = true;
-				});
-				rows = rows.filter(function (item) {
-					var id = String(item.id);
-					if (existingIds[id]) {
-						return false;
-					}
-					existingIds[id] = true;
-					return true;
-				});
-			}
-			page.cursor = config.signedCursor ? null : (response.nextCursor || null);
-			page.cursorToken = config.signedCursor ? (response[config.tokenKey] || null) : null;
-			page.hasMore = response.hasMore === true;
+			page.offset = parseInt(response.offset, 10) || 0;
+			page.limit = parseInt(response.limit, 10) || tablePageSize;
+			page.total = Math.max(0, parseInt(response.total, 10) || 0);
+			page.rowCount = rows.length;
 			page.loading = false;
-			if (append) {
-				ensureTableBatchState(selector).visibleUnits += rows.length;
-			} else {
-				ensureTableBatchState(selector).visibleUnits = tableBatchSize;
+			received = true;
+			config.render(rows);
+			updateSortHeaders(selector);
+			updateHistoryPagination(selector);
+			if (page.refreshRequested) {
+				page.refreshRequested = false;
+				requestTablePage(selector, options, false);
 			}
-			config.render(rows, append);
 		}, function () {
-			if (generation !== (tablePageGeneration[selector] || 0) || tablePageStates[selector] !== page) {
-				return;
+			if (generation === (tablePageGeneration[selector] || 0) && tablePageStates[selector] === page && !received) {
+				page.loading = false;
+				page.refreshRequested = false;
+				updateHistoryPagination(selector);
 			}
-			page.loading = false;
-			updateTableRowBatching(selector);
 		}, options);
 	}
 
 	function loadPagedTable(selector, options) {
-		tablePageGeneration[selector] = (tablePageGeneration[selector] || 0) + 1;
-		tablePageStates[selector] = {cursor: null, cursorToken: null, hasMore: false, loading: false};
-		ensureTableBatchState(selector).visibleUnits = tableBatchSize;
-		return requestTablePage(selector, false, options);
+		if (!pagedTableConfig(selector)) {
+			return null;
+		}
+		var state = ensureTablePageState(selector);
+		if (state.loading) {
+			state.refreshRequested = true;
+			return null;
+		}
+		updateSortHeaders(selector);
+		tablePaginationControls(selector);
+		updateHistoryPagination(selector);
+		return requestTablePage(selector, options, false);
 	}
 
-	function showMoreTableRows(selector) {
-		var state = ensureTableBatchState(selector);
-		var units = tableBatchUnitsFromRows($(selector).find('tbody tr'), tableBatchUnitSize(selector));
-		if (state.visibleUnits < units.length) {
-			state.visibleUnits = Math.min(units.length, state.visibleUnits + tableBatchSize);
-			updateTableRowBatching(selector);
+	function changeTablePage(selector, offset) {
+		var state = ensureTablePageState(selector);
+		if (state.loading) {
 			return;
 		}
-		var page = tablePageStates[selector];
-		if (page && page.hasMore && !page.loading) {
-			requestTablePage(selector, true);
+		state.offset = Math.max(0, offset);
+		requestTablePage(selector, null, false);
+	}
+
+	function changeTableSort(selector, sortKey) {
+		var config = pagedTableConfig(selector);
+		if (!config || $.inArray(sortKey, config.sortKeys) === -1) {
+			return;
 		}
+		var state = ensureTablePageState(selector);
+		var previousOffset = state.offset;
+		var nextDirection = sortKey === state.sortKey ? (state.sortDirection === 'asc' ? 'desc' : 'asc') : 'asc';
+		var nextSortKey = sortKey;
+		state.sortKey = sortKey;
+		state.sortDirection = nextDirection;
+		state.offset = 0;
+		state.loading = true;
+		var generation = (tablePageGeneration[selector] || 0) + 1;
+		tablePageGeneration[selector] = generation;
+		updateSortHeaders(selector);
+		updateHistoryPagination(selector);
+		var previous = tablePreferenceQueues[selector] || $.Deferred().resolve().promise();
+		tablePreferenceQueues[selector] = previous.then(function () {
+			var deferred = $.Deferred();
+			var saved = false;
+			ajax('saveuisetting', {
+				table: config.table,
+				sort_key: nextSortKey,
+				sort_direction: nextDirection
+			}, function () {
+				saved = true;
+				state.savedSortKey = nextSortKey;
+				state.savedSortDirection = nextDirection;
+			}, function () {
+				deferred.resolve(saved);
+			});
+			return deferred.promise();
+		});
+		tablePreferenceQueues[selector].done(function (saved) {
+			if (generation !== (tablePageGeneration[selector] || 0) || tablePageStates[selector] !== state) {
+				return;
+			}
+			if (!saved) {
+				state.sortKey = state.savedSortKey;
+				state.sortDirection = state.savedSortDirection;
+				state.offset = previousOffset;
+				state.loading = false;
+				updateSortHeaders(selector);
+				updateHistoryPagination(selector);
+				return;
+			}
+			state.loading = false;
+			requestTablePage(selector, null, true);
+		});
 	}
 
 	function rememberRules(rules) {
@@ -1688,7 +1866,6 @@
 		} else {
 			$tbody.html(rows.join(''));
 		}
-		updateTableRowBatching(selector);
 	}
 
 	function formatSuppressedIncidentReason(row) {
@@ -1751,7 +1928,6 @@
 		} else {
 			$tbody.html(rows.join(''));
 		}
-		updateTableRowBatching('#rc-suppressed-incidents-table');
 	}
 
 	function renderAlertHistory(items, append) {
@@ -1885,7 +2061,6 @@
 		} else {
 			$tbody.html(rows.join(''));
 		}
-		updateTableRowBatching('#rc-alert-history-table');
 	}
 
 	function collectRouteList($list) {
@@ -3108,6 +3283,20 @@
 	}
 
 	function bindEvents() {
+		$(document).off('click.repeatcaller', '.rc-table-show-more').on('click.repeatcaller', '.rc-table-show-more', function () {
+			var selector = tableBatchSelectorFromControl($(this));
+			if (selector) {
+				showMoreTableRows(selector);
+			}
+		});
+
+		$(document).off('click.repeatcaller', '.rc-table-show-less').on('click.repeatcaller', '.rc-table-show-less', function () {
+			var selector = tableBatchSelectorFromControl($(this));
+			if (selector) {
+				showLessTableRows(selector);
+			}
+		});
+
 		$(document).off('click.repeatcaller', '.rc-alert-call-language-sample').on('click.repeatcaller', '.rc-alert-call-language-sample', function () {
 			var $button = $(this);
 			if (alertCallSampleLocked) {
@@ -3168,23 +3357,33 @@
 			});
 		});
 
-		$(document).off('click.repeatcaller', '.rc-table-show-more').on('click.repeatcaller', '.rc-table-show-more', function () {
-			var tableId = $.trim(String($(this).closest('.rc-table-batch-controls').attr('data-table-id') || ''));
-			if (tableId === '') {
-				return;
+		$(document).off('click.repeatcaller', '.rc-history-pagination .rc-page-previous').on('click.repeatcaller', '.rc-history-pagination .rc-page-previous', function () {
+			var tableId = $.trim(String($(this).closest('.rc-history-pagination').attr('data-table-id') || ''));
+			var selector = tableId ? '#' + tableId : '';
+			if (selector && pagedTableConfig(selector)) {
+				var state = ensureTablePageState(selector);
+				changeTablePage(selector, state.offset - state.limit);
 			}
-			showMoreTableRows('#' + tableId);
 		});
 
-		$(document).off('click.repeatcaller', '.rc-table-show-less').on('click.repeatcaller', '.rc-table-show-less', function () {
-			var tableId = $.trim(String($(this).closest('.rc-table-batch-controls').attr('data-table-id') || ''));
-			if (tableId === '') {
+		$(document).off('click.repeatcaller', '.rc-history-pagination .rc-page-next').on('click.repeatcaller', '.rc-history-pagination .rc-page-next', function () {
+			var tableId = $.trim(String($(this).closest('.rc-history-pagination').attr('data-table-id') || ''));
+			var selector = tableId ? '#' + tableId : '';
+			if (selector && pagedTableConfig(selector)) {
+				var state = ensureTablePageState(selector);
+				changeTablePage(selector, state.offset + state.limit);
+			}
+		});
+
+		$(document).off('click.repeatcaller keydown.repeatcaller', 'th.rc-sortable').on('click.repeatcaller keydown.repeatcaller', 'th.rc-sortable', function (event) {
+			if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') {
 				return;
 			}
-			var selector = '#' + tableId;
-			var state = ensureTableBatchState(selector);
-			state.visibleUnits = tableBatchSize;
-			updateTableRowBatching(selector);
+			if (event.type === 'keydown') {
+				event.preventDefault();
+			}
+			var selector = '#' + String($(this).closest('table').attr('id') || '');
+			changeTableSort(selector, String($(this).attr('data-sort-key') || ''));
 		});
 
 		$('#rc-rule-alert-call-destination-add').off('click.repeatcaller').on('click.repeatcaller', function (event) {

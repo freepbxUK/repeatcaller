@@ -203,30 +203,6 @@ function create_repository(PDO $db): RepeatCallerRepository {
 	return new RepeatCallerRepository($db);
 }
 
-function collect_cursor_pages(callable $loadPage, string $label): array {
-	$cursor = null;
-	$rows = [];
-	$pageCount = 0;
-	$lastHasMore = true;
-	do {
-		$page = $loadPage($cursor);
-		assert_true(count($page['rows']) <= 15, $label . ' page must return at most 15 rows');
-		$pageCount++;
-		foreach ($page['rows'] as $row) {
-			$rows[] = $row;
-		}
-		$cursor = $page['nextCursor'];
-		$hasMore = $page['hasMore'];
-		$lastHasMore = $hasMore;
-		if ($hasMore) {
-			assert_true(is_array($cursor), $label . ' page with hasMore must provide a continuation cursor');
-		}
-	} while ($hasMore);
-	assert_true($pageCount > 1, $label . ' fixture must traverse more than one page');
-	assert_same(false, $lastHasMore, $label . ' must report exhaustion through hasMore=false');
-	return $rows;
-}
-
 $dbPath = tempnam(sys_get_temp_dir(), 'repeatcaller_repo_');
 if ($dbPath === false) {
 	throw new RuntimeException('Unable to create temporary SQLite file');
@@ -1222,19 +1198,51 @@ try {
 		$insertPageIncident->execute([$pageRuleId, 'accepted-page-' . $index, 'accepted-page-' . $index, 'repeat', '2026-10-01 11:00:00', '2026-10-01 11:00:00', 'accepted', '2026-10-01 11:00:00', '2026-10-01 12:00:00']);
 		$acceptedIncidentIds[] = (int)$pageDb->lastInsertId();
 	}
-	$activePages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
-		return $pageRepo->loadIncidentsPage('active', $cursor, 15);
-	}, 'active incident');
+	$updatePageIncident = $pageDb->prepare('UPDATE repeatcaller_incidents SET matched_call_count = ?, first_matched_at = ? WHERE id = ?');
+	foreach ($activeIncidentIds as $index => $incidentId) {
+		$firstMatchedAt = (new DateTimeImmutable('2026-10-01 11:00:00'))->modify('+' . $index . ' seconds')->format('Y-m-d H:i:s');
+		$updatePageIncident->execute([$index + 1, $firstMatchedAt, $incidentId]);
+	}
+	$activePageOrder = [];
+	for ($offset = 0; $offset < 321; $offset += 25) {
+		$page = $pageRepo->loadIncidentsPage('active', $offset, 'updated', 'desc');
+		assert_same(321, $page['total'], 'every active page should report the complete matching record count');
+		assert_same($offset, $page['offset'], 'active page should retain its requested aligned offset');
+		assert_same(25, $page['limit'], 'active page should report the fixed 25-record limit');
+		assert_true(count($page['rows']) <= 25, 'active page must never return more than 25 rows');
+		$activePageOrder = array_merge($activePageOrder, array_map(static function (array $row): int { return (int)$row['id']; }, $page['rows']));
+	}
 	$expectedActiveIds = array_merge(array_reverse(array_slice($activeIncidentIds, 0, 305)), array_reverse(array_slice($activeIncidentIds, 305)));
-	assert_same(321, count($activePages), 'active incident pagination must continue beyond the former 300-row cap');
-	assert_same($expectedActiveIds, array_map(static function (array $row): int { return (int)$row['id']; }, $activePages), 'active cursor pages must preserve timestamp/ID ordering, including the null updated_at tail');
-	assert_same(321, count(array_unique(array_column($activePages, 'id'))), 'active cursor pages must not duplicate records across equal-timestamp boundaries');
-	$acceptedPages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
-		return $pageRepo->loadIncidentsPage('accepted', $cursor, 15);
-	}, 'accepted incident');
-	assert_same(array_reverse($acceptedIncidentIds), array_map(static function (array $row): int { return (int)$row['id']; }, $acceptedPages), 'accepted cursor pages must preserve state filtering and updated_at/ID ordering');
-	$oversizedPage = $pageRepo->loadIncidentsPage('active', null, 1000);
-	assert_same(15, count($oversizedPage['rows']), 'incident page size must be clamped to 15 regardless of the requested size');
+	assert_same(321, count($activePageOrder), 'offset pagination must continue beyond 300 records');
+	assert_same($expectedActiveIds, $activePageOrder, 'active pagination should sort the full result set before applying each offset, including the NULL timestamp tail');
+	assert_same(321, count(array_unique($activePageOrder)), 'active offset pages must not duplicate records');
+	$middleActivePage = $pageRepo->loadIncidentsPage('active', 26, 'updated', 'desc');
+	assert_same(25, count($middleActivePage['rows']), 'unaligned offsets should align down to their 25-row page boundary');
+	assert_same(25, $middleActivePage['offset'], 'unaligned offset should report the effective aligned offset');
+	$lastActivePage = $pageRepo->loadIncidentsPage('active', 320, 'updated', 'desc');
+	assert_same(21, count($lastActivePage['rows']), 'last active page should handle an incomplete final page');
+	$pastEndPage = $pageRepo->loadIncidentsPage('active', 10000, 'updated', 'desc');
+	assert_same(300, $pastEndPage['offset'], 'out-of-range offset should safely select the last valid page');
+	assert_same(21, count($pastEndPage['rows']), 'out-of-range page should return the final valid rows');
+	$acceptedPage = $pageRepo->loadIncidentsPage('accepted', 0, 'updated', 'desc');
+	assert_same(321, $acceptedPage['total'], 'accepted incident state filtering should remain intact');
+	$numericSortPage = $pageRepo->loadIncidentsPage('active', 0, 'count', 'asc');
+	assert_same($activeIncidentIds[0], (int)$numericSortPage['rows'][0]['id'], 'numeric counts should sort numerically across all matching rows');
+	$countAscendingIds = [];
+	$countDescendingIds = [];
+	for ($offset = 0; $offset < 321; $offset += 25) {
+		$countAscendingIds = array_merge($countAscendingIds, array_map(static function (array $row): int { return (int)$row['id']; }, $pageRepo->loadIncidentsPage('active', $offset, 'count', 'asc')['rows']));
+		$countDescendingIds = array_merge($countDescendingIds, array_map(static function (array $row): int { return (int)$row['id']; }, $pageRepo->loadIncidentsPage('active', $offset, 'count', 'desc')['rows']));
+	}
+	assert_same($activeIncidentIds, $countAscendingIds, 'numeric ascending sort should be applied to the full result set before page offsets');
+	assert_same(array_reverse($activeIncidentIds), $countDescendingIds, 'numeric descending sort should be applied to the full result set before page offsets');
+	$dateAscendingPage = $pageRepo->loadIncidentsPage('active', 0, 'first', 'asc');
+	$dateSortPage = $pageRepo->loadIncidentsPage('active', 0, 'first', 'desc');
+	assert_same($activeIncidentIds[0], (int)$dateAscendingPage['rows'][0]['id'], 'ascending date sort should return the earliest timestamp first');
+	assert_same($activeIncidentIds[320], (int)$dateSortPage['rows'][0]['id'], 'date values should sort chronologically');
+	$emptySuppressionPage = $pageRepo->loadActiveSuppressedIncidentsPage('2027-01-01 00:00:00');
+	assert_same([], $emptySuppressionPage['rows'], 'suppression pagination should handle an empty eligible dataset');
+	assert_same(0, $emptySuppressionPage['total'], 'empty eligible dataset should report a zero total');
 
 	$insertPageHistory = $pageDb->prepare('INSERT INTO repeatcaller_incident_alert_history (incident_id, rule_id, subject_key, subject_label, action_type, event_type, delivery_status, alert_reminder_mode, dedupe_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 	$alertHistoryIds = [];
@@ -1242,11 +1250,13 @@ try {
 		$insertPageHistory->execute([1, $pageRuleId, 'history-page-' . $index, 'history-page-' . $index, 'gui', 'initial', 'recorded', 'never', 'page-history-' . $index, '2026-10-01 12:00:00', '2026-10-01 12:00:00']);
 		$alertHistoryIds[] = (int)$pageDb->lastInsertId();
 	}
-	$historyPages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
-		return $pageRepo->loadIncidentAlertHistoryPage($cursor, 15);
-	}, 'alert history');
-	assert_same(array_reverse($alertHistoryIds), array_map(static function (array $row): int { return (int)$row['id']; }, $historyPages), 'alert-history cursor pages must not skip or duplicate rows with equal timestamps');
-	assert_true(!$pageRepo->loadIncidentAlertHistoryPage(['time' => '2026-10-01 12:00:00', 'id' => min($alertHistoryIds)], 15)['hasMore'], 'alert-history hasMore must become false at exhaustion');
+	$historyPageIds = [];
+	for ($offset = 0; $offset < 321; $offset += 25) {
+		$page = $pageRepo->loadIncidentAlertHistoryPage($offset, 'time', 'desc');
+		assert_same(321, $page['total'], 'alert-history pages should report the full matching count');
+		$historyPageIds = array_merge($historyPageIds, array_map(static function (array $row): int { return (int)$row['id']; }, $page['rows']));
+	}
+	assert_same(array_reverse($alertHistoryIds), $historyPageIds, 'alert-history offset pages should preserve stable time/ID ordering without gaps');
 
 	$insertPageSuppression = $pageDb->prepare('INSERT INTO repeatcaller_incident_suppression_history (related_incident_id, rule_id, rule_name, mode, subject_key, subject_label, matched_call_count, threshold_count, observation_window_minutes, suppression_source, suppression_minutes, suppression_started_at, suppression_expires_at, related_incident_state, detected_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 	$suppressionIds = [];
@@ -1257,10 +1267,34 @@ try {
 	$insertPageSuppression->execute([322, $pageRuleId, 'Pagination Rule', 'repeat', 'cleared-page', 'cleared-page', 2, 2, 60, 'suppression', 60, '2026-10-01 11:00:00', '2026-10-02 11:00:00', 'active', '2026-10-01 12:00:00', '2026-10-01 12:01:00', '2026-10-01 12:01:00']);
 	$pageDb->exec("UPDATE repeatcaller_incident_suppression_history SET cleared_at = '2026-10-01 12:02:00' WHERE subject_key = 'cleared-page'");
 	$insertPageSuppression->execute([323, $pageRuleId, 'Pagination Rule', 'repeat', 'expired-page', 'expired-page', 2, 2, 60, 'suppression', 60, '2026-10-01 10:00:00', '2026-10-01 11:00:00', 'active', '2026-10-01 10:00:00', '2026-10-01 12:02:00', '2026-10-01 12:02:00']);
-	$suppressionPages = collect_cursor_pages(static function (?array $cursor) use ($pageRepo): array {
-		return $pageRepo->loadActiveSuppressedIncidentsPage('2026-10-01 12:00:00', $cursor, 15);
-	}, 'active suppression');
-	assert_same(array_reverse($suppressionIds), array_map(static function (array $row): int { return (int)$row['id']; }, $suppressionPages), 'suppression pagination must preserve active/uncleared filtering and created_at/ID order');
+	$suppressionPageIds = [];
+	$suppressionTotal = 0;
+	for ($offset = 0; $offset < 321; $offset += 25) {
+		$page = $pageRepo->loadActiveSuppressedIncidentsPage('2026-10-01 12:00:00', $offset, 'time', 'desc');
+		$suppressionTotal = $page['total'];
+		$suppressionPageIds = array_merge($suppressionPageIds, array_map(static function (array $row): int { return (int)$row['id']; }, $page['rows']));
+	}
+	assert_same(321, $suppressionTotal, 'suppression pages should exclude cleared and expired rows from their total');
+	assert_same(array_reverse($suppressionIds), $suppressionPageIds, 'suppression pagination should preserve server-side eligibility and deterministic time/ID ordering');
+
+	$activeSortKeys = ['id', 'first', 'rule', 'mode', 'subject', 'caller', 'last', 'count', 'threshold', 'window', 'status', 'updated'];
+	$recentSortKeys = ['id', 'created', 'rule', 'mode', 'subject', 'status', 'accepted_by', 'suppression_expires', 'updated'];
+	$suppressionSortKeys = ['time', 'rule', 'mode', 'subject', 'count', 'threshold_window', 'suppressed_until', 'cleared', 'reason', 'related_incident'];
+	$historySortKeys = ['id', 'time', 'rule', 'mode', 'subject', 'event', 'action', 'status', 'stage', 'success', 'failure_detail'];
+	foreach (['asc', 'desc'] as $direction) {
+		foreach ($activeSortKeys as $sortKey) {
+			assert_same(25, count($pageRepo->loadIncidentsPage('active', 0, $sortKey, $direction)['rows']), 'active sort key ' . $sortKey . ' should be accepted in both directions');
+		}
+		foreach ($recentSortKeys as $sortKey) {
+			assert_same(25, count($pageRepo->loadIncidentsPage('accepted', 0, $sortKey, $direction)['rows']), 'recent sort key ' . $sortKey . ' should be accepted in both directions');
+		}
+		foreach ($suppressionSortKeys as $sortKey) {
+			assert_same(25, count($pageRepo->loadActiveSuppressedIncidentsPage('2026-10-01 12:00:00', 0, $sortKey, $direction)['rows']), 'suppression sort key ' . $sortKey . ' should be accepted in both directions');
+		}
+		foreach ($historySortKeys as $sortKey) {
+			assert_same(25, count($pageRepo->loadIncidentAlertHistoryPage(0, $sortKey, $direction)['rows']), 'alert-history sort key ' . $sortKey . ' should be accepted in both directions');
+		}
+	}
 	unset($repo, $db);
 
 	$dbReloaded = new PDO('sqlite:' . $dbPath);

@@ -49,6 +49,42 @@ Expected v1 fresh-install tables include:
 8. Confirm rule-level mode, alert actions, schedules, and recipients persist after save/reload.
 9. In the Rules table, confirm each row shows Edit, Status, and X controls on one line. Press Status and confirm the explainer bar turns light grey, shows rule status text for 15 seconds, then reverts.
 
+## Incident and History Pagination
+
+- Confirm Active Incidents, Recent Incidents, Suppressed Incidents, and Alert
+	History each show a Previous / range / Next control above the table.
+- With more than 25 eligible rows, confirm each table replaces its rows when
+	moving between pages and reports the full matching total, including an
+	incomplete final page. Empty tables should retain their existing empty-state
+	message.
+- Sort each data column in both directions. Confirm sorting affects records
+	across pages, the selected heading shows its direction, and each table's
+	preference survives navigation, a full browser refresh, and returning to the
+	module.
+- Change data while a table is on a later page and confirm automatic refresh
+	retains the selected sort and page when valid, or moves to the final valid
+	page if rows were removed.
+- Confirm Accept and Clear Suppression continue to work after sorting and
+	pagination. Confirm Rules and Schedule retain their existing row-batching
+	behaviour.
+
+For a development checkout already staged at
+`/var/www/html/admin/modules/repeatcaller/`, test the unsigned branch with:
+
+```bash
+cd /var/www/html/admin/modules/repeatcaller
+git fetch origin
+git switch 1-1-0_Dev
+git pull --ff-only
+cd ~
+fwconsole ma install repeatcaller
+fwconsole chown
+fwconsole reload
+```
+
+Do not enable rule ID 1 or alter the existing `RC-PAGE-FIXTURE-20261015:`
+production records during manual testing.
+
 ## Runtime
 
 10. Trigger matching inbound calls and confirm incident creation.

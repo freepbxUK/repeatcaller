@@ -27,6 +27,9 @@ alongside a new per-rule Test Email action:
 * Adds regression coverage for sender identity parsing, email delivery,
   recipient compatibility, release metadata, the Alert History condition, and
   Test Email behaviour.
+* Replaces cumulative incident/history table loading with independent
+  25-record server-side pagination, database sorting, and persistent per-table
+  sort preferences; Rules and Schedule table behaviour is unchanged.
 
 ## Signed Release
 
@@ -750,8 +753,10 @@ Reports > Repeat Caller includes these main sections:
 - Alert History: per-event action history and delivery outcomes, with incident
   ID shown first.
 - Suppressed Incidents: suppression audit rows with clear-suppression action.
-- Table presentation: each admin table initially shows 15 rows, with Show more
-  and Show less controls that expand/collapse additional rows in batches of 15.
+- Active Incidents, Recent Incidents, Suppressed Incidents, and Alert History
+  use independent 25-record server-side pages with sortable columns and
+  persistent sorting preferences. Rules and Schedule retain their existing
+  row-batching behaviour.
 
 UI refresh behavior uses AJAX command allowlisting and section change tokens so
 only changed sections refresh. Tables remain in local responsive wrappers with

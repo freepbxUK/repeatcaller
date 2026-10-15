@@ -155,12 +155,15 @@ and cannot be used until you save or cancel the edit.
 
 ## Table Row Display
 
-Repeat Caller admin tables show up to 15 rows by default.
+Active Incidents, Recent Incidents, Suppressed Incidents, and Alert History
+show up to 25 records per page. Use the Previous and Next controls above each
+table to navigate; the displayed range and total reflect the complete
+matching result set. Select a data heading to sort the full result set, and
+select it again to reverse the direction. Each table remembers its own sort
+preference.
 
-- If more rows exist, Show more reveals the next 15 rows.
-- Show less returns the table to the initial 15-row view.
-- This is a presentation control only; backend retrieval and incident logic are
-	unchanged.
+Rules and Schedule keep their existing Show more and Show less row-batching
+controls.
 
 ## Repeat Mode
 

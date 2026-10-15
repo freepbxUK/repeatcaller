@@ -1470,13 +1470,12 @@ $pageDataStart = strpos($controllerSource, 'private function rcBuildPageData(): 
 $pageDataEnd = strpos($controllerSource, 'private function alertCallLanguageSupport()', $pageDataStart !== false ? $pageDataStart : 0);
 $pageDataSource = $pageDataStart !== false && $pageDataEnd !== false ? substr($controllerSource, $pageDataStart, $pageDataEnd - $pageDataStart) : '';
 assert_true(strpos($pageDataSource, 'loadIncidents(') === false && strpos($pageDataSource, 'loadIncidentAlertHistory(') === false, 'affected tables should not preload incident or alert-history datasets during page bootstrap');
-assert_true(strpos($controllerSource, 'loadIncidentsPage($view, $this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'incident AJAX handler should request one 15-row cursor page');
-assert_true(strpos($controllerSource, 'loadIncidentAlertHistoryPage($this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'alert-history AJAX handler should request one 15-row cursor page');
-assert_true(strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $cursor, self::TABLE_PAGE_SIZE)') !== false, 'suppressed-incidents AJAX handler should request one 15-row cursor page');
-assert_true(strpos($controllerSource, 'const TABLE_PAGE_SIZE = 15;') !== false, 'backend incremental page size should be fixed at 15');
-assert_true(strpos($controllerSource, 'loadIncidentsPage($view, $this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'incident endpoint must return cursor pages rather than cap the table at a cumulative row count');
-assert_true(strpos($controllerSource, 'loadIncidentAlertHistoryPage($this->requestTableCursor(), self::TABLE_PAGE_SIZE)') !== false, 'alert-history endpoint must return cursor pages rather than cap the table at a cumulative row count');
-assert_true(strpos($controllerSource, 'private function requestTableCursor(): ?array') !== false && strpos($controllerSource, "'cursor_id'") !== false && strpos($controllerSource, "'cursor_time'") !== false, 'AJAX controller must validate and parse timestamp/ID continuation cursors');
+assert_true(strpos($controllerSource, 'loadIncidentsPage($repositoryView, $offset, $sortKey, $sortDirection)') !== false, 'incident AJAX handler should request offset pages using validated sorting preferences');
+assert_true(strpos($controllerSource, 'loadIncidentAlertHistoryPage($offset, $sortKey, $sortDirection)') !== false, 'alert-history AJAX handler should request offset pages using validated sorting preferences');
+assert_true(strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $offset, $sortKey, $sortDirection)') !== false, 'suppressed-incidents AJAX handler should derive eligibility time on the server and request an offset page');
+assert_true(strpos($controllerSource, 'const TABLE_PAGE_SIZE = 25;') !== false, 'backend page size should match the fixed 25-record interface');
+assert_true(strpos($controllerSource, 'private function requestTableOffset(): ?int') !== false && strpos($controllerSource, 'PHP_INT_MAX') !== false, 'AJAX controller should reject malformed and overflowing offsets');
+assert_true(strpos($controllerSource, 'private function requestTableCursor(): ?array') === false, 'retired continuation-cursor parsing should not remain in the controller');
 $getIncidentsStart = strpos($controllerSource, 'private function rcHandleGetIncidents(): array');
 $getIncidentsEnd = strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array', $getIncidentsStart !== false ? $getIncidentsStart : 0);
 $getIncidentsSource = $getIncidentsStart !== false && $getIncidentsEnd !== false ? substr($controllerSource, $getIncidentsStart, $getIncidentsEnd - $getIncidentsStart) : '';
@@ -1707,7 +1706,7 @@ assert_true(strpos($jsSource, "alert_call: 'Alert Call'") !== false, 'Alert Hist
 assert_true(strpos($jsSource, "sent: 'Sent'") !== false, 'Alert History status label should humanize sent to Sent');
 assert_true(strpos($jsSource, "accepted: 'Accepted'") !== false && strpos($jsSource, "busy: 'Busy'") !== false, 'Alert History status labels should normalize accepted and busy consistently');
 assert_true(strpos($jsSource, "answered_no_response: 'Answered, No Response'") !== false, 'Alert History status mapping should render answered_no_response as Answered, No Response');
-assert_true((bool)preg_match('/function loadAlertHistory\(options\) \{[\s\S]*loadPagedTable\(\'\#rc-alert-history-table\', options\);/', $jsSource), 'live Alert History path should load its first page through the shared cursor-paged AJAX loader');
+assert_true((bool)preg_match('/function loadAlertHistory\(options\) \{[\s\S]*loadPagedTable\(\'\#rc-alert-history-table\', options\);/', $jsSource), 'live Alert History path should load through the shared offset-paged AJAX loader');
 assert_true(strpos($jsSource, 'function incidentSubjectDisplay(row) {') !== false, 'history tables should use one dedicated subject helper for invert-only presentation changes');
 assert_true(strpos($jsSource, "var threshold = parseInt(data.threshold_count || data.incident_threshold_count || 0, 10);") !== false && strpos($jsSource, "var windowMinutes = parseInt(data.observation_window_minutes || data.incident_observation_window_minutes || 0, 10);") !== false, 'invert subject display should read historical threshold and window snapshots from the incident row');
 assert_true(strpos($jsSource, "if (modeValue === 'invert') {") !== false, 'subject helper should only rewrite invert-mode rows');
@@ -1716,17 +1715,23 @@ assert_true(strpos($jsSource, "var subjectDisplay = incidentSubjectDisplay(i);")
 assert_true(strpos($jsSource, "var subjectDisplay = incidentSubjectDisplay(row);") !== false, 'suppressed incidents should use the subject helper');
 assert_true(strpos($jsSource, "var subjectDisplay = incidentSubjectDisplay(h);") !== false, 'alert history should use the subject helper');
 assert_true(strpos($jsSource, "return rawSubject !== '' ? rawSubject : '-';") !== false, 'non-invert incidents should keep the captured subject_label');
-assert_true(strpos($jsSource, 'var tableBatchSize = 15;') !== false, 'table batching should use a fixed initial and incremental batch size of 15 rows');
-assert_true(strpos($jsSource, "'#rc-rules-table'") !== false && strpos($jsSource, "'#rc-active-incidents-table'") !== false && strpos($jsSource, "'#rc-suppressed-incidents-table'") !== false && strpos($jsSource, "'#rc-recent-incidents-table'") !== false && strpos($jsSource, "'#rc-alert-history-table'") !== false && strpos($jsSource, "'#rc-schedule-table'") !== false, 'table batching should be configured for every Repeat Caller admin table');
+assert_true(strpos($jsSource, 'var tableBatchSize = 15;') !== false, 'unaffected Rules and Schedule batching should retain its existing 15-row behaviour');
+assert_true(strpos($jsSource, 'var tablePageSize = 25;') !== false, 'incident and history pagination should use a fixed 25-row page size');
+assert_true(strpos($jsSource, "'#rc-rules-table'") !== false && strpos($jsSource, "'#rc-schedule-table'") !== false, 'unaffected Rules and Schedule tables should retain their batching configuration');
 assert_true(strpos($jsSource, 'function tableBatchUnitSize(selector) {') !== false && strpos($jsSource, "return selector === '#rc-rules-table' ? 2 : 1;") !== false, 'rules table batching should keep primary rows and explainer rows together as one unit');
 assert_true(strpos($jsSource, 'function updateTableRowBatching(selector) {') !== false, 'table batching should be managed through one reusable updater helper');
 assert_true(strpos($jsSource, 'rc-table-show-more') !== false && strpos($jsSource, 'rc-table-show-less') !== false, 'table batching should render explicit Show more and Show less controls');
-assert_true(strpos($jsSource, 'function showMoreTableRows(selector) {') !== false && strpos($jsSource, 'requestTablePage(selector, true);') !== false, 'Show More should reveal cached rows first and then request one additional backend page');
-assert_true(strpos($jsSource, 'state.visibleUnits = tableBatchSize;') !== false, 'Show Less should reset visibility to the first 15 rows while retaining loaded rows');
-assert_true(strpos($jsSource, 'payload.cursor_time = page.cursor.time') !== false && strpos($jsSource, 'payload.cursor_id = page.cursor.id') !== false && strpos($jsSource, 'page.hasMore = response.hasMore === true;') !== false, 'subsequent table requests should send the last cursor and preserve backend hasMore state');
-assert_true(strpos($jsSource, 'payload.cursor_token = page.cursorToken;') !== false && strpos($jsSource, 'page.cursorToken = config.signedCursor ? (response[config.tokenKey] || null) : null;') !== false, 'suppression pagination must send and retain the opaque authenticated continuation token');
-assert_true((bool)preg_match('/\.rc-table-show-more[\s\S]*showMoreTableRows\(\'\#\' \+ tableId\);/', $jsSource), 'Show More controls must dispatch to the shared incremental loader');
-assert_true(strpos($jsSource, "updateTableRowBatching('#rc-rules-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-suppressed-incidents-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-alert-history-table');") !== false && strpos($jsSource, 'updateTableRowBatching(selector);') !== false, 'all table render paths should refresh batching visibility after rows are rebuilt');
+assert_true(strpos($jsSource, "'.rc-table-show-more').on('click.repeatcaller'") !== false && strpos($jsSource, "showMoreTableRows(selector);") !== false, 'Rules and Schedule Show More buttons should be bound to the working batch handler');
+assert_true(strpos($jsSource, "'.rc-table-show-less').on('click.repeatcaller'") !== false && strpos($jsSource, "showLessTableRows(selector);") !== false, 'Rules and Schedule Show Less buttons should be bound to the working batch handler');
+assert_true(strpos($jsSource, "if ($.inArray(selector, tableBatchSelectors) === -1)") !== false, 'legacy Show More and Show Less handlers should be limited to Rules and Schedule');
+assert_true(strpos($jsSource, 'function showMoreTableRows(selector) {') !== false && strpos($jsSource, 'function showLessTableRows(selector) {') !== false, 'only the Rules and Schedule row-batching handlers should remain');
+assert_true(strpos($jsSource, 'payload.offset = page.offset;') !== false && strpos($jsSource, 'payload.sort_key = page.sortKey;') !== false && strpos($jsSource, 'payload.sort_direction = page.sortDirection;') !== false, 'page requests should send the validated offset and independent sort state');
+assert_true(strpos($jsSource, 'page.total = Math.max(0, parseInt(response.total, 10) || 0);') !== false && strpos($jsSource, 'page.offset = parseInt(response.offset, 10) || 0;') !== false, 'client state should use the complete result count and effective server offset');
+assert_true(strpos($jsSource, "ajax('saveuisetting'") !== false && strpos($jsSource, 'state.offset = 0;') !== false, 'sorting should persist its preference and reset only that table to its first page');
+assert_true(strpos($jsSource, 'function updateHistoryPagination(selector) {') !== false && strpos($jsSource, "'Showing ' + first + ' to ' + last + ' of ' + state.total") !== false, 'each affected table should display its current range and complete total');
+assert_true(strpos($jsSource, 'function changeTablePage(selector, offset) {') !== false && strpos($jsSource, 'state.offset + state.limit') !== false, 'Previous and Next should fetch replacement pages without appending');
+assert_true(strpos($jsSource, 'function tablePaginationControls(selector) {') !== false && strpos($jsSource, 'class="btn btn-xs btn-default rc-page-previous"') !== false && strpos($jsSource, 'class="btn btn-xs btn-default rc-page-next"') !== false, 'affected tables should render independent Previous and Next controls');
+assert_true(strpos($jsSource, "updateTableRowBatching('#rc-rules-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-schedule-table');") !== false && strpos($jsSource, 'updateTableRowBatching(selector);') !== false, 'unaffected Rules and Schedule render paths should retain batching updates');
 assert_true(strpos($jsSource, 'updateAllTableRowBatching();') !== false, 'initial page setup should apply table batching controls after the UI is bootstrapped');
 assert_true(strpos($jsSource, 'function normalizeCode(rawValue) {') !== false, 'alert-history formatter should normalize canonical codes in one helper');
 assert_true(strpos($jsSource, 'function mapCode(rawValue, labels) {') !== false, 'alert-history formatter should map canonical codes through one helper');
@@ -2283,6 +2288,52 @@ $.each = function (collection, callback) {
 
 $.isArray = Array.isArray;
 
+$.Deferred = function () {
+	let resolved = false;
+	let resolvedValue;
+	const thenHandlers = [];
+	const doneHandlers = [];
+	const promise = {
+		resolve: function (value) {
+			if (resolved) {
+				return promise;
+			}
+			resolved = true;
+			resolvedValue = value;
+			thenHandlers.forEach(function (handler) { handler(value); });
+			doneHandlers.forEach(function (handler) { handler(value); });
+			return promise;
+		},
+		promise: function () { return promise; },
+		then: function (handler) {
+			const next = $.Deferred();
+			const continueWithValue = function (value) {
+				const returned = handler(value);
+				if (returned && typeof returned.then === 'function') {
+					returned.then(function (nextValue) { next.resolve(nextValue); });
+				} else {
+					next.resolve(returned);
+				}
+			};
+			if (resolved) {
+				continueWithValue(resolvedValue);
+			} else {
+				thenHandlers.push(continueWithValue);
+			}
+			return next.promise();
+		},
+		done: function (handler) {
+			if (resolved) {
+				handler(resolvedValue);
+			} else {
+				doneHandlers.push(handler);
+			}
+			return promise;
+		}
+	};
+	return promise;
+};
+
 $.inArray = function (value, array) {
 	if (!Array.isArray(array)) {
 		return -1;
@@ -2495,8 +2546,12 @@ window.__hooks = {
 	getRuleEditorDirty: function () { return ruleEditorDirty; },
 	clearRuleEditorDirty: function () { ruleEditorDirty = false; updateRuleTestEmailState(); },
 	loadPagedTable: loadPagedTable,
+	changeTablePage: changeTablePage,
+	changeTableSort: changeTableSort,
+	requestTablePage: requestTablePage,
+	updateTableRowBatching: updateTableRowBatching,
 	showMoreTableRows: showMoreTableRows,
-	showLessTableRows: function (selector) { ensureTableBatchState(selector).visibleUnits = tableBatchSize; updateTableRowBatching(selector); },
+	showLessTableRows: showLessTableRows,
 	pageState: function (selector) { return tablePageStates[selector]; },
 	batchState: function (selector) { return tableBatchStates[selector]; }
 };
@@ -3240,66 +3295,157 @@ hooks.clearRuleEditorDirty();
 assert($('#rc-rule-test-email').prop('disabled') === true, 'Test Email should remain unavailable without valid recipients even when clean');
 
 const pageRequests = [];
-function alertPage(startId, hasMore) {
+function alertPage(offset, total) {
 	const rows = [];
-	for (let id = startId; id > startId - 15; id -= 1) {
+	const count = Math.min(25, Math.max(0, total - offset));
+	for (let index = 0; index < count; index += 1) {
+		const id = total - offset - index;
 		rows.push({id: id, incident_id: id, rule_id: 1, subject_key: 'page-' + id, subject_label: 'page-' + id, action_type: 'gui', event_type: 'initial', delivery_status: 'recorded', stage_n: 0, created_at: '2026-10-01 12:00:00', successful_at: null, failure_detail: '', incident_mode: 'repeat'});
 	}
-	return {status: true, alertHistory: rows, hasMore: hasMore, nextCursor: {time: '2026-10-01 12:00:00', id: startId - 14}};
+	return {status: true, alertHistory: rows, offset: offset, limit: 25, total: total};
 }
-const uiPageResponses = [alertPage(321, true), alertPage(306, true), alertPage(291, false)];
-context.window.__testAjaxInterceptor = function (command, payload, done) {
+const uiPageResponses = [alertPage(0, 321), alertPage(25, 321), alertPage(25, 321), alertPage(300, 321)];
+context.window.__testAjaxInterceptor = function (command, payload, done, onComplete) {
 	pageRequests.push({command: command, payload: Object.assign({}, payload)});
-	assert(command === 'getalerthistory', 'Alert History Show More should use the existing getalerthistory endpoint');
+	assert(command === 'getalerthistory', 'Alert History navigation should use the existing getalerthistory endpoint');
+	assert(payload.sort_key === 'time' && payload.sort_direction === 'desc', 'Alert History should load with its independent default sort');
 	const response = uiPageResponses.shift();
-	assert(response && response.alertHistory.length <= 15, 'each response to the browser must contain at most 15 records');
+	assert(response && response.alertHistory.length <= 25, 'each response to the browser must contain at most 25 records');
+	assert(payload.offset === response.offset, 'the requested offset should match the rendered page');
 	done(response);
+	if (onComplete) { onComplete(); }
 	return {done: function () { return this; }, fail: function () { return this; }};
 };
 hooks.loadPagedTable('#rc-alert-history-table');
-assert($('#rc-alert-history-table tbody tr').length === 15, 'initial affected-table request should render 15 records');
-assert(pageRequests.length === 1 && pageRequests[0].payload.cursor_id === undefined, 'initial page request should not include a continuation cursor');
-hooks.showMoreTableRows('#rc-alert-history-table');
-assert(pageRequests.length === 2 && pageRequests[1].payload.cursor_id === 307, 'first Show More should request the next page after the final initial record');
-assert($('#rc-alert-history-table tbody tr').length === 30, 'first Show More should append 15 records');
-hooks.showLessTableRows('#rc-alert-history-table');
-const rowsAfterShowLess = $('#rc-alert-history-table tbody tr');
-assert(rowsAfterShowLess.length === 30 && rowsAfterShowLess.els.slice(15).every(function (row) { return row.hidden; }), 'Show Less should hide loaded rows without deleting them (rows=' + rowsAfterShowLess.length + ', hidden=' + rowsAfterShowLess.els.slice(15).filter(function (row) { return row.hidden; }).length + ', visibleUnits=' + hooks.batchState('#rc-alert-history-table').visibleUnits + ')');
-hooks.showMoreTableRows('#rc-alert-history-table');
-assert(pageRequests.length === 2 && $('#rc-alert-history-table tbody tr').els.slice(15, 30).every(function (row) { return !row.hidden; }), 'Show More after Show Less should reveal cached rows without another request');
-hooks.showMoreTableRows('#rc-alert-history-table');
-assert(pageRequests.length === 3 && pageRequests[2].payload.cursor_id === 292, 'Show More after cached rows should request the next cursor page');
-assert($('#rc-alert-history-table tbody tr').length === 45 && hooks.pageState('#rc-alert-history-table').hasMore === false, 'last page should append its rows and stop offering more data');
-hooks.showMoreTableRows('#rc-alert-history-table');
-assert(pageRequests.length === 3, 'exhausted table must not issue another page request');
+assert($('#rc-alert-history-table tbody tr').length === 25, 'initial Alert History page should render exactly 25 records');
+assert(pageRequests.length === 1 && pageRequests[0].payload.offset === 0, 'initial page request should start at offset zero');
+assert(hooks.pageState('#rc-alert-history-table').total === 321, 'pagination state should retain the complete record count');
+hooks.changeTablePage('#rc-alert-history-table', 25);
+assert(pageRequests.length === 2 && pageRequests[1].payload.offset === 25, 'Next should request the middle page by offset');
+assert($('#rc-alert-history-table tbody tr').length === 25, 'Next should replace, not append, the displayed records');
+assert(hooks.pageState('#rc-alert-history-table').offset === 25, 'middle-page navigation should update only this table offset');
+hooks.loadPagedTable('#rc-alert-history-table', {silent: true});
+assert(pageRequests.length === 3 && pageRequests[2].payload.offset === 25, 'background refresh should preserve the selected Alert History page');
+hooks.changeTablePage('#rc-alert-history-table', 300);
+assert(pageRequests.length === 4 && pageRequests[3].payload.offset === 300, 'last page navigation should request the final aligned offset');
+assert($('#rc-alert-history-table tbody tr').length === 21, 'final page should correctly render an incomplete page');
+assert(hooks.pageState('#rc-alert-history-table').total === 321, 'last page should keep the complete total rather than count only displayed rows');
 
 const activePageRequests = [];
-const activePageRowsOne = [];
-for (let id = 300; id > 285; id -= 1) {
-	activePageRowsOne.push({id: id, rule_id: 1, subject_key: 'active-' + id, subject_label: 'active-' + id, mode: 'repeat', state: 'active', updated_at: '2026-10-01 13:00:00'});
+function incidentPage(offset, total) {
+	const rows = [];
+	const count = Math.min(25, Math.max(0, total - offset));
+	for (let index = 0; index < count; index += 1) {
+		const id = total - offset - index;
+		rows.push({id: id, rule_id: 1, subject_key: 'active-' + id, subject_label: 'active-' + id, mode: 'repeat', state: 'active', updated_at: '2026-10-01 13:00:00'});
+	}
+	return {status: true, incidents: rows, offset: offset, limit: 25, total: total};
 }
-const activePageRowsTwo = [{id: 286, rule_id: 1, subject_key: 'active-286', subject_label: 'active-286', mode: 'repeat', state: 'active', updated_at: '2026-10-01 12:59:00'}];
-for (let id = 285; id > 271; id -= 1) {
-	activePageRowsTwo.push({id: id, rule_id: 1, subject_key: 'active-' + id, subject_label: 'active-' + id, mode: 'repeat', state: 'active', updated_at: '2026-10-01 12:59:00'});
-}
-const activePageResponses = [
-	{status: true, incidents: activePageRowsOne, hasMore: true, nextCursor: {time: '2026-10-01 13:00:00', id: 286}},
-	{status: true, incidents: activePageRowsTwo, hasMore: false, nextCursor: {time: '2026-10-01 12:59:00', id: 272}}
-];
-context.window.__testAjaxInterceptor = function (command, payload, done) {
+const activePageResponses = [incidentPage(0, 51), incidentPage(25, 51), incidentPage(0, 51), incidentPage(0, 51)];
+const savedSortPreferences = [];
+context.window.__testAjaxInterceptor = function (command, payload, done, onComplete) {
+	if (command === 'saveuisetting') {
+		savedSortPreferences.push(Object.assign({}, payload));
+		done({status: true});
+		if (onComplete) { onComplete(); }
+		return {done: function () { return this; }, fail: function () { return this; }};
+	}
 	activePageRequests.push({command: command, payload: Object.assign({}, payload)});
 	assert(command === 'getincidents' && payload.view === 'active', 'active incident pages should preserve the active-state filter');
+	assert(payload.sort_key === (activePageRequests.length >= 3 ? 'count' : 'updated'), 'Active Incidents should send its independent selected sort');
+	assert(payload.sort_direction === (activePageRequests.length === 3 ? 'asc' : 'desc'), 'Active Incidents should send the selected direction');
 	const response = activePageResponses.shift();
-	assert(response.incidents.length <= 15, 'active incident response should not exceed 15 rows');
+	assert(response.incidents.length <= 25, 'active incident response should not exceed 25 rows');
 	done(response);
+	if (onComplete) { onComplete(); }
 	return {done: function () { return this; }, fail: function () { return this; }};
 };
 hooks.loadPagedTable('#rc-active-incidents-table');
-assert($('#rc-active-incidents-table tbody tr').length === 15, 'active incidents should initially render 15 rows');
-hooks.showMoreTableRows('#rc-active-incidents-table');
-assert(activePageRequests.length === 2 && activePageRequests[1].payload.cursor_id === 286, 'active Show More should continue after the final row from the prior page');
-assert($('#rc-active-incidents-table tbody tr').length === 29, 'a duplicate row caused by a moving updated_at sort key should be suppressed on append');
-assert(hooks.pageState('#rc-active-incidents-table').hasMore === false, 'active table should stop after its backend indicates exhaustion');
+assert($('#rc-active-incidents-table tbody tr').length === 25, 'Active Incidents should initially render 25 rows');
+hooks.changeTablePage('#rc-active-incidents-table', 25);
+assert(activePageRequests.length === 2 && activePageRequests[1].payload.offset === 25, 'Active Incidents Next should fetch the next offset');
+assert($('#rc-active-incidents-table tbody tr').length === 25, 'Active Incidents Next should replace the previous page');
+assert(hooks.pageState('#rc-active-incidents-table').offset === 25, 'Active Incidents should maintain a separate page offset from Alert History');
+hooks.changeTableSort('#rc-active-incidents-table', 'count');
+assert(savedSortPreferences.length === 1 && savedSortPreferences[0].table === 'active_incidents' && savedSortPreferences[0].sort_key === 'count' && savedSortPreferences[0].sort_direction === 'asc', 'sorting should persist the selected table, column and direction');
+assert(activePageRequests.length === 3 && activePageRequests[2].payload.offset === 0, 'changing a sort should request that table\'s first page');
+assert(hooks.pageState('#rc-active-incidents-table').sortKey === 'count' && hooks.pageState('#rc-active-incidents-table').sortDirection === 'asc', 'sorting should update only that table\'s state');
+hooks.changeTableSort('#rc-active-incidents-table', 'count');
+assert(savedSortPreferences.length === 2 && savedSortPreferences[1].sort_direction === 'desc', 'selecting the active heading again should persist the reversed direction');
+assert(activePageRequests.length === 4 && activePageRequests[3].payload.sort_direction === 'desc', 'reversing a sort should fetch the updated database ordering');
+assert(hooks.pageState('#rc-alert-history-table').offset === 300 && hooks.pageState('#rc-alert-history-table').sortKey === 'time', 'sorting one table must not change another table\'s page or sort state');
+
+const staleCallbacks = [];
+context.window.__testAjaxInterceptor = function (command, payload, done) {
+	staleCallbacks.push({payload: Object.assign({}, payload), done: done});
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.requestTablePage('#rc-active-incidents-table', {silent: true}, true);
+hooks.pageState('#rc-active-incidents-table').offset = 25;
+hooks.requestTablePage('#rc-active-incidents-table', {silent: true}, true);
+staleCallbacks[1].done(incidentPage(25, 51));
+staleCallbacks[0].done(incidentPage(0, 51));
+assert(hooks.pageState('#rc-active-incidents-table').offset === 25, 'a stale AJAX response must not overwrite a newer page selection');
+assert($('#rc-active-incidents-table tbody tr').length === 25, 'stale response protection should leave one page rendered');
+
+const rulesBatchBody = $('#rc-rules-table-body').get(0);
+for (let index = 0; index < 16; index += 1) {
+	rulesBatchBody.append(new Element('tr'));
+	rulesBatchBody.append(new Element('tr', '', ['rc-rule-explainer-row']));
+}
+hooks.updateTableRowBatching('#rc-rules-table');
+let rulesBatchRows = $('#rc-rules-table tbody tr').els;
+assert(rulesBatchRows.filter(function (row) { return !row.hidden; }).length === 30, 'Rules batching should initially show 15 rule/explainer pairs');
+assert(rulesBatchRows.every(function (row, index) { return row.hidden === rulesBatchRows[index ^ 1].hidden; }), 'Rules batching should never separate a rule row from its explainer row');
+hooks.showMoreTableRows('#rc-rules-table');
+assert(hooks.batchState('#rc-rules-table').visibleUnits === 17 && rulesBatchRows.every(function (row) { return !row.hidden; }), 'Rules Show More handler should reveal the next 15 pairs while keeping each explainer together');
+hooks.showLessTableRows('#rc-rules-table');
+rulesBatchRows = $('#rc-rules-table tbody tr').els;
+assert(hooks.batchState('#rc-rules-table').visibleUnits === 15 && rulesBatchRows.filter(function (row) { return !row.hidden; }).length === 30, 'Rules Show Less handler should return to 15 visible rule/explainer pairs');
+
+const scheduleBatchBody = $('#rc-schedule-table-body').get(0);
+scheduleBatchBody.children = [];
+for (let index = 0; index < 32; index += 1) {
+	scheduleBatchBody.append(new Element('tr'));
+}
+hooks.updateTableRowBatching('#rc-schedule-table');
+assert($('#rc-schedule-table tbody tr').els.filter(function (row) { return !row.hidden; }).length === 15, 'Schedule batching should initially show 15 rows');
+hooks.showMoreTableRows('#rc-schedule-table');
+assert(hooks.batchState('#rc-schedule-table').visibleUnits === 30 && $('#rc-schedule-table tbody tr').els.filter(function (row) { return !row.hidden; }).length === 30, 'Schedule Show More handler should reveal the next 15 rows');
+hooks.showLessTableRows('#rc-schedule-table');
+assert(hooks.batchState('#rc-schedule-table').visibleUnits === 15 && $('#rc-schedule-table tbody tr').els.filter(function (row) { return !row.hidden; }).length === 15, 'Schedule Show Less handler should restore the first 15 rows');
+
+const delayedSortSaves = [];
+const recentPageRequests = [];
+context.window.__testAjaxInterceptor = function (command, payload, done, onComplete) {
+	if (command === 'saveuisetting') {
+		delayedSortSaves.push({payload: Object.assign({}, payload), done: done, onComplete: onComplete});
+		return {done: function () { return this; }, fail: function () { return this; }};
+	}
+	recentPageRequests.push(Object.assign({}, payload));
+	done({status: true, incidents: [], offset: 0, limit: 25, total: 0});
+	if (onComplete) { onComplete(); }
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.changeTableSort('#rc-recent-incidents-table', 'created');
+hooks.changeTableSort('#rc-recent-incidents-table', 'rule');
+assert(delayedSortSaves.length === 1 && delayedSortSaves[0].payload.sort_key === 'created' && delayedSortSaves[0].payload.sort_direction === 'asc', 'the first queued sort save should capture its own intended values');
+delayedSortSaves[0].done({status: true});
+delayedSortSaves[0].onComplete();
+assert(delayedSortSaves.length === 2 && delayedSortSaves[1].payload.sort_key === 'rule' && delayedSortSaves[1].payload.sort_direction === 'asc', 'a rapid follow-up sort should save its own values rather than the latest mutable state');
+assert(recentPageRequests.length === 0, 'a stale first sort save should not trigger a page load or overwrite the newer selection');
+delayedSortSaves[1].done({status: true});
+delayedSortSaves[1].onComplete();
+assert(recentPageRequests.length === 1 && recentPageRequests[0].sort_key === 'rule', 'the latest successful sort should load rows using its saved preference');
+
+hooks.changeTableSort('#rc-recent-incidents-table', 'subject');
+hooks.changeTableSort('#rc-recent-incidents-table', 'mode');
+delayedSortSaves[2].done({status: true});
+delayedSortSaves[2].onComplete();
+assert(delayedSortSaves[3].payload.sort_key === 'mode', 'the newest rapid sort should remain queued after its predecessor succeeds');
+delayedSortSaves[3].onComplete();
+assert(hooks.pageState('#rc-recent-incidents-table').sortKey === 'subject' && hooks.pageState('#rc-recent-incidents-table').sortDirection === 'asc', 'a failed latest preference save should restore the most recently successful sort');
+assert(recentPageRequests.length === 1, 'a failed latest preference save should not issue a page request for an unsaved sort');
 
 process.stdout.write('OK');
 NODE;
@@ -3513,7 +3659,7 @@ assert_true((bool)preg_match('/case \'clearalerthistory\': return \$this->rcHand
 assert_true((bool)preg_match('/private function rcHandleClearAlertHistory\(\): array\s*\{[\s\S]*\$repository->clearIncidentAlertHistory\(\)[\s\S]*\'deleted_count\'\s*=>\s*\$deletedCount,[\s\S]*\}/', $controllerSource), 'clear-history handler must clear alert history table and return deleted_count');
 assert_true((bool)preg_match('/const AJAX_COMMANDS = \[[\s\S]*\'getsuppressedincidents\'[\s\S]*\];/', $controllerSource), 'AJAX command allowlist must include getsuppressedincidents');
 assert_true((bool)preg_match('/case \'getsuppressedincidents\': return \$this->rcHandleGetSuppressedIncidents\(\);/', $controllerSource), 'AJAX dispatcher must route getsuppressedincidents to its handler');
-assert_true(strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array') !== false && strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $cursor, self::TABLE_PAGE_SIZE)') !== false && strpos($controllerSource, "'hasMore' => \$page['hasMore']") !== false, 'operational suppressed-incidents handler must return active rows in cursor pages with hasMore');
+assert_true(strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array') !== false && strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $offset, $sortKey, $sortDirection)') !== false && strpos($controllerSource, "'total' => \$page['total']") !== false, 'operational suppressed-incidents handler should return filtered offset pages with an accurate total');
 assert_true((bool)preg_match('/const AJAX_COMMANDS = \[[\s\S]*\'clearsuppression\'[\s\S]*\];/', $controllerSource), 'AJAX command allowlist must include clearsuppression');
 assert_true((bool)preg_match('/case \'clearsuppression\': return \$this->rcHandleClearSuppression\(\);/', $controllerSource), 'AJAX dispatcher must route clearsuppression to its handler');
 assert_true(strpos($controllerSource, 'private function rcHandleClearSuppression(): array') !== false && strpos($controllerSource, 'clearSuppressedIncidentHistory') !== false, 'clear-suppression handler must clear the audit row and active suppression state');
@@ -3634,49 +3780,68 @@ $forgedEarlierAsOf = date('Y-m-d H:i:s', strtotime($snapshotAsOf) - 7200);
 $expiredAtSnapshot = date('Y-m-d H:i:s', strtotime($snapshotAsOf) - 3600);
 $validUntil = date('Y-m-d H:i:s', strtotime($snapshotAsOf) + 86400);
 $suppressionPageDb->prepare('INSERT INTO repeatcaller_rules (name, enabled, mode, threshold_count, observation_window_minutes, caller_mode, exclude_withheld, did_scope_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-	->execute(['Suppression Cursor Rule', 1, 'repeat', 2, 60, 'any', 0, 'all']);
+	->execute(['Suppression Pagination Rule', 1, 'repeat', 2, 60, 'any', 0, 'all']);
 $suppressionRuleId = (int)$suppressionPageDb->lastInsertId();
 $insertSuppressionPage = $suppressionPageDb->prepare('INSERT INTO repeatcaller_incident_suppression_history (related_incident_id, rule_id, rule_name, mode, subject_key, subject_label, matched_call_count, threshold_count, observation_window_minutes, suppression_source, suppression_minutes, suppression_started_at, suppression_expires_at, related_incident_state, detected_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-$insertSuppressionPage->execute([1, $suppressionRuleId, 'Suppression Cursor Rule', 'repeat', 'expired-subject', 'expired-subject', 2, 2, 60, 'suppression', 60, $expiredAtSnapshot, $expiredAtSnapshot, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
-for ($suppressionIndex = 1; $suppressionIndex <= 20; $suppressionIndex++) {
-	$insertSuppressionPage->execute([$suppressionIndex + 1, $suppressionRuleId, 'Suppression Cursor Rule', 'repeat', 'valid-subject-' . $suppressionIndex, 'valid-subject-' . $suppressionIndex, 2, 2, 60, 'suppression', 60, $snapshotAsOf, $validUntil, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
+$insertSuppressionPage->execute([1, $suppressionRuleId, 'Suppression Pagination Rule', 'repeat', 'expired-subject', 'expired-subject', 2, 2, 60, 'suppression', 60, $expiredAtSnapshot, $expiredAtSnapshot, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
+for ($suppressionIndex = 1; $suppressionIndex <= 30; $suppressionIndex++) {
+	$insertSuppressionPage->execute([$suppressionIndex + 1, $suppressionRuleId, 'Suppression Pagination Rule', 'repeat', 'valid-subject-' . $suppressionIndex, 'valid-subject-' . $suppressionIndex, 2, 2, 60, 'suppression', 60, $snapshotAsOf, $validUntil, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
 }
 $paginationController = new \FreePBX\modules\Repeatcaller(new stdClass());
 $suppressedPageMethod = new ReflectionMethod($paginationController, 'rcHandleGetSuppressedIncidents');
 $suppressedPageMethod->setAccessible(true);
-$_REQUEST = [];
+$_REQUEST = ['offset' => '0'];
 $initialSuppressionPage = $suppressedPageMethod->invoke($paginationController);
 assert_same(true, $initialSuppressionPage['status'], 'initial suppression page should succeed');
-assert_same(15, count($initialSuppressionPage['suppressedIncidents']), 'initial suppression page must return 15 records');
-assert_same(true, $initialSuppressionPage['hasMore'], 'initial suppression page should advertise the remaining records');
-assert_true(!array_key_exists('asOf', $initialSuppressionPage), 'raw snapshot timestamp must not be returned to the browser');
-$validSuppressionCursorToken = $initialSuppressionPage['nextCursorToken'];
-assert_true(is_string($validSuppressionCursorToken) && $validSuppressionCursorToken !== '', 'initial page should issue an authenticated continuation token');
+assert_same(25, count($initialSuppressionPage['suppressedIncidents']), 'initial suppression page must return 25 records');
+assert_same(30, $initialSuppressionPage['total'], 'suppression page total should include every matching unexpired record');
+assert_same(0, $initialSuppressionPage['offset'], 'initial suppression page should report offset zero');
+assert_same(25, $initialSuppressionPage['limit'], 'suppression page should report the fixed page size');
+assert_true(!array_key_exists('asOf', $initialSuppressionPage), 'server suppression cutoff must not be returned to the browser');
+assert_same(0, count(array_filter($initialSuppressionPage['suppressedIncidents'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })), 'expired suppression must remain excluded from the first page');
 
-$_REQUEST = ['cursor_token' => $validSuppressionCursorToken];
+$_REQUEST = ['offset' => '25'];
 $continuedSuppressionPage = $suppressedPageMethod->invoke($paginationController);
-assert_same(true, $continuedSuppressionPage['status'], 'valid signed continuation should retrieve the next page');
-assert_same(5, count($continuedSuppressionPage['suppressedIncidents']), 'valid continuation should return only the remaining active suppressions');
-assert_same(false, $continuedSuppressionPage['hasMore'], 'valid continuation should report exhaustion');
-assert_same(0, count(array_filter($continuedSuppressionPage['suppressedIncidents'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })), 'expired suppression must remain excluded on a valid continuation');
+assert_same(true, $continuedSuppressionPage['status'], 'middle offset should retrieve the remaining suppression page');
+assert_same(5, count($continuedSuppressionPage['suppressedIncidents']), 'final suppression page should contain only the remaining records');
+assert_same(30, $continuedSuppressionPage['total'], 'middle suppression page should retain the complete total');
 
-$tokenParts = explode('.', $validSuppressionCursorToken);
-$tokenPayloadJson = base64_decode(strtr($tokenParts[0] . str_repeat('=', (4 - strlen($tokenParts[0]) % 4) % 4), '-_', '+/'), true);
-$tokenPayload = is_string($tokenPayloadJson) ? json_decode($tokenPayloadJson, true) : null;
-assert_true(is_array($tokenPayload), 'signed continuation should contain an encoded cursor payload');
-assert_true(($tokenPayload['purpose'] ?? '') === 'suppressed-incidents-page' && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', (string)($tokenPayload['asOf'] ?? '')) === 1, 'initial suppression page should establish a purpose-bound server snapshot in its signed token');
-$tokenPayload['asOf'] = $forgedEarlierAsOf;
-$forgedPayload = rtrim(strtr(base64_encode((string)json_encode($tokenPayload, JSON_UNESCAPED_SLASHES)), '+/', '-_'), '=');
-$_REQUEST = ['cursor_token' => $forgedPayload . '.' . $tokenParts[1]];
-$forgedSuppressionPage = $suppressedPageMethod->invoke($paginationController);
-assert_same(false, $forgedSuppressionPage['status'], 'changing asOf inside a continuation without a valid signature must be rejected');
+$_REQUEST = ['offset' => '0', 'as_of' => $forgedEarlierAsOf];
+$forgedCutoffPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(30, $forgedCutoffPage['total'], 'client-supplied as_of must not change the server-derived suppression eligibility cutoff');
+assert_same(0, count(array_filter($forgedCutoffPage['suppressedIncidents'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })), 'a forged earlier cutoff must not expose expired suppression rows');
 
-$forgedRepositoryPage = (new \FreePBX\modules\Repeatcaller\RepeatCallerRepository($suppressionPageDb))
-	->loadActiveSuppressedIncidentsPage($forgedEarlierAsOf, ['time' => $tokenPayload['time'], 'id' => (int)$tokenPayload['id']], 15);
-assert_true(count(array_filter($forgedRepositoryPage['rows'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })) === 1, 'fixture must prove an earlier forged asOf would expose the expired suppression absent token authentication');
-$_REQUEST = ['cursor_id' => (string)$tokenPayload['id'], 'cursor_time' => (string)$tokenPayload['time'], 'cursor_as_of' => $forgedEarlierAsOf];
-$unsignedSuppressionPage = $suppressedPageMethod->invoke($paginationController);
-assert_same(false, $unsignedSuppressionPage['status'], 'legacy unsigned cursor fields, including cursor_as_of, must be rejected');
+foreach (['-1', '1abc', '999999999999999999999999999999'] as $invalidOffset) {
+	$_REQUEST = ['offset' => $invalidOffset];
+	assert_same(false, $suppressedPageMethod->invoke($paginationController)['status'], 'malformed and overflowing offsets must be rejected');
+}
+$_REQUEST = ['offset' => '0', 'sort_key' => 'time DESC; DROP TABLE repeatcaller_incident_suppression_history'];
+assert_same(false, $suppressedPageMethod->invoke($paginationController)['status'], 'untrusted SQL sort expressions must be rejected');
+$_REQUEST = ['cursor_token' => 'legacy-token'];
+assert_same(false, $suppressedPageMethod->invoke($paginationController)['status'], 'retired cursor tokens must not be accepted as offsets');
+
+$offsetMethod = new ReflectionMethod($paginationController, 'requestTableOffset');
+$offsetMethod->setAccessible(true);
+$_REQUEST = ['offset' => '26'];
+assert_same(26, $offsetMethod->invoke($paginationController), 'valid non-negative integer offsets should be accepted before repository alignment');
+$_REQUEST = ['offset' => '01'];
+assert_same(null, $offsetMethod->invoke($paginationController), 'non-canonical integer offsets should be rejected');
+
+$saveUiSettingMethod = new ReflectionMethod($paginationController, 'rcHandleSaveUiSetting');
+$saveUiSettingMethod->setAccessible(true);
+$_REQUEST = ['table' => 'active_incidents', 'sort_key' => 'count', 'sort_direction' => 'asc'];
+$savedUiSetting = $saveUiSettingMethod->invoke($paginationController);
+assert_same(true, $savedUiSetting['status'], 'valid per-table sort preferences should be saved');
+$_REQUEST = [];
+$loadedSettingsMethod = new ReflectionMethod($paginationController, 'getAlertSettings');
+$loadedSettingsMethod->setAccessible(true);
+$savedSettings = $loadedSettingsMethod->invoke($paginationController);
+assert_same('count', $savedSettings['ui_active_incidents_sort_key'], 'saved sort keys should persist in module settings');
+assert_same('asc', $savedSettings['ui_active_incidents_sort_dir'], 'saved sort directions should persist in module settings');
+$_REQUEST = ['table' => 'active_incidents', 'sort_key' => 'id; DROP TABLE repeatcaller_settings', 'sort_direction' => 'asc'];
+assert_same(false, $saveUiSettingMethod->invoke($paginationController)['status'], 'invalid sort preference values must be rejected without persistence');
+$_REQUEST = ['table' => 'active_incidents', 'sort_key' => 'updated', 'sort_direction' => 'sideways'];
+assert_same(false, $saveUiSettingMethod->invoke($paginationController)['status'], 'invalid sort directions must be rejected');
 FreePBX::setDatabase($savedPageDatabase);
 $_REQUEST = $savedPageRequest;
 $_SESSION = $savedPageSession;
