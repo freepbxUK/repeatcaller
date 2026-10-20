@@ -466,11 +466,7 @@ final class RepeatCallerRepository {
 
 		$this->replaceRuleSchedules($ruleId, self::normalizeSchedules($payload['schedules'] ?? []), $now);
 		$this->replaceRuleCallers($ruleId, $payload['callers'] ?? [], $now);
-		$this->replaceRuleDids(
-			$ruleId,
-			$this->didsForScopeMode($payload['dids'] ?? [], (string)($payload['did_scope_mode'] ?? 'all')),
-			$now
-		);
+		$this->replaceRuleDids($ruleId, $payload['dids'] ?? [], $now);
 
 		if ($shouldReconcileSuppression) {
 			$this->reconcileSuppressionForRule($ruleId, $existingSuppressionOverride, $newSuppressionOverride, $now);
@@ -624,6 +620,83 @@ final class RepeatCallerRepository {
 	}
 
 	public function loadIncidents(string $view = 'active', int $limit = 200): array {
+		return $this->queryIncidents($view, $limit);
+	}
+
+	public function loadIncidentsPage(string $view = 'active', int $offset = 0, string $sortKey = 'updated', string $sortDirection = 'desc'): array {
+		if ($view === 'active') {
+			$states = ['active'];
+			$sortExpressions = [
+				'id' => ['i.id'],
+				'first' => ['i.first_matched_at'],
+				'rule' => ['LOWER(r.name)'],
+				'mode' => ['LOWER(i.mode)'],
+				'subject' => [
+					'CASE WHEN LOWER(i.mode) = \'invert\' THEN 1 ELSE 0 END',
+					'CASE WHEN LOWER(i.mode) = \'invert\' THEN i.threshold_count ELSE NULL END',
+					'CASE WHEN LOWER(i.mode) = \'invert\' THEN i.observation_window_minutes ELSE NULL END',
+					'LOWER(COALESCE(NULLIF(i.subject_label, \'\'), i.subject_key, \'-\'))',
+				],
+				'caller' => ['LOWER(COALESCE(NULLIF(i.caller_normalized, \'\'), i.caller_display, \'\'))'],
+				'last' => ['i.last_matched_at'],
+				'count' => ['i.matched_call_count'],
+				'threshold' => ['i.threshold_count'],
+				'window' => ['i.observation_window_minutes'],
+				'status' => ['LOWER(i.state)'],
+				'updated' => ['i.updated_at'],
+			];
+			$defaultSortKey = 'updated';
+		} elseif ($view === 'accepted') {
+			$states = ['accepted'];
+			$sortExpressions = [
+				'id' => ['i.id'],
+				'created' => ['i.created_at'],
+				'rule' => ['LOWER(r.name)'],
+				'mode' => ['LOWER(i.mode)'],
+				'subject' => [
+					'CASE WHEN LOWER(i.mode) = \'invert\' THEN 1 ELSE 0 END',
+					'CASE WHEN LOWER(i.mode) = \'invert\' THEN i.threshold_count ELSE NULL END',
+					'CASE WHEN LOWER(i.mode) = \'invert\' THEN i.observation_window_minutes ELSE NULL END',
+					'LOWER(COALESCE(NULLIF(i.subject_label, \'\'), i.subject_key, \'-\'))',
+				],
+				'status' => ['LOWER(i.state)'],
+				'accepted_by' => ['LOWER(i.accepted_by)'],
+				'suppression_expires' => ['i.suppression_expires_at'],
+				'updated' => ['i.updated_at'],
+			];
+			$defaultSortKey = 'updated';
+		} else {
+			throw new \InvalidArgumentException('Unsupported incident table view.');
+		}
+		$stateSql = 'i.state IN (' . $this->placeholders($states) . ')';
+		$sortKey = $this->validatedSortKey($sortKey !== '' ? $sortKey : $defaultSortKey, $sortExpressions);
+		$direction = $this->validatedSortDirection($sortDirection);
+		$baseQuery =
+			' FROM repeatcaller_incidents i
+			 JOIN repeatcaller_rules r ON r.id = i.rule_id
+			 WHERE ' . $stateSql;
+		$countSql = 'SELECT COUNT(*)' . $baseQuery;
+		$rowsSql =
+			'SELECT i.id, i.rule_id, i.subject_key, i.subject_label, i.caller_normalized, i.caller_display,
+				i.withheld_caller, i.mode, i.threshold_count, i.observation_window_minutes, i.first_matched_at, i.last_matched_at, i.matched_call_count,
+				i.state, i.accepted_by, i.accepted_at, i.accept_source, i.suppression_expires_at,
+				i.cleared_at, i.created_at, i.updated_at,
+				r.name AS rule_name,
+				r.caller_mode, r.did_scope_mode' . $baseQuery;
+
+		return $this->loadOffsetPage(
+			$countSql,
+			$rowsSql,
+			$states,
+			$offset,
+			$sortKey,
+			$direction,
+			$sortExpressions,
+			'i.id'
+		);
+	}
+
+	private function queryIncidents(string $view, int $limit): array {
 		if ($view === 'active') {
 			$states = ['active'];
 		} elseif ($view === 'accepted') {
@@ -740,6 +813,60 @@ final class RepeatCallerRepository {
 	}
 
 	public function loadIncidentAlertHistory(int $limit = 200): array {
+		return $this->queryIncidentAlertHistory($limit);
+	}
+
+	public function loadIncidentAlertHistoryPage(int $offset = 0, string $sortKey = 'time', string $sortDirection = 'desc'): array {
+		$sortExpressions = [
+			'id' => ['h.incident_id'],
+			'time' => ['h.created_at'],
+			'rule' => ['LOWER(COALESCE(r.name, CAST(h.rule_id AS CHAR)))'],
+			'mode' => ['LOWER(COALESCE(i.mode, \'\'))'],
+			'subject' => [
+				'CASE WHEN LOWER(COALESCE(i.mode, \'\')) = \'invert\' THEN 1 ELSE 0 END',
+				'CASE WHEN LOWER(COALESCE(i.mode, \'\')) = \'invert\' THEN i.threshold_count ELSE NULL END',
+				'CASE WHEN LOWER(COALESCE(i.mode, \'\')) = \'invert\' THEN i.observation_window_minutes ELSE NULL END',
+				'LOWER(COALESCE(NULLIF(h.subject_label, \'\'), h.subject_key, \'-\'))',
+			],
+			'event' => ['LOWER(h.event_type)'],
+			'action' => ['LOWER(h.action_type)'],
+			'status' => ['LOWER(h.delivery_status)'],
+			'stage' => ['h.stage_n'],
+			'success' => ['h.successful_at'],
+			'failure_detail' => ['LOWER(h.failure_detail)'],
+		];
+		$sortKey = $this->validatedSortKey($sortKey, $sortExpressions);
+		$baseQuery =
+			' FROM repeatcaller_incident_alert_history h
+			 LEFT JOIN repeatcaller_incidents i ON i.id = h.incident_id
+			 LEFT JOIN repeatcaller_rules r ON r.id = h.rule_id';
+		$rowsSql =
+			'SELECT h.id, h.incident_id, h.rule_id, h.subject_key, h.subject_label,
+				h.action_type, h.event_type, h.stage_n, h.recipient, h.delivery_status,
+				h.attempted_at, h.successful_at, h.failure_detail, h.alert_reminder_mode,
+				h.created_at, h.updated_at,
+				i.mode AS incident_mode,
+				i.threshold_count AS incident_threshold_count,
+				i.observation_window_minutes AS incident_observation_window_minutes,
+				i.caller_normalized AS incident_caller_normalized,
+				i.caller_display AS incident_caller_display,
+				r.name AS rule_name,
+				r.caller_mode,
+				r.did_scope_mode' . $baseQuery;
+
+		return $this->loadOffsetPage(
+			'SELECT COUNT(*)' . $baseQuery,
+			$rowsSql,
+			[],
+			$offset,
+			$sortKey,
+			$this->validatedSortDirection($sortDirection),
+			$sortExpressions,
+			'h.id'
+		);
+	}
+
+	private function queryIncidentAlertHistory(int $limit): array {
 		$stmt = $this->pdo->prepare(
 			'SELECT h.id, h.incident_id, h.rule_id, h.subject_key, h.subject_label,
 				h.action_type, h.event_type, h.stage_n, h.recipient, h.delivery_status,
@@ -756,6 +883,7 @@ final class RepeatCallerRepository {
 			 FROM repeatcaller_incident_alert_history h
 			 LEFT JOIN repeatcaller_incidents i ON i.id = h.incident_id
 			 LEFT JOIN repeatcaller_rules r ON r.id = h.rule_id
+			 WHERE 1 = 1
 			 ORDER BY h.created_at DESC, h.id DESC
 			 LIMIT ' . (int)$limit
 		);
@@ -783,6 +911,55 @@ final class RepeatCallerRepository {
 	}
 
 	public function loadActiveSuppressedIncidents(string $asOf, int $limit = 200): array {
+		return $this->queryActiveSuppressedIncidents($asOf, $limit);
+	}
+
+	public function loadActiveSuppressedIncidentsPage(string $asOf, int $offset = 0, string $sortKey = 'time', string $sortDirection = 'desc'): array {
+		$filterSql =
+			' WHERE (h.cleared_at IS NULL OR h.cleared_at IN (\'\', \'0000-00-00\', \'0000-00-00 00:00:00\'))
+			   AND h.suppression_expires_at > ?';
+		$sortExpressions = [
+			'time' => ['h.created_at'],
+			'rule' => ['LOWER(h.rule_name)'],
+			'mode' => ['LOWER(h.mode)'],
+			'subject' => [
+				'CASE WHEN LOWER(h.mode) = \'invert\' THEN 1 ELSE 0 END',
+				'CASE WHEN LOWER(h.mode) = \'invert\' THEN h.threshold_count ELSE NULL END',
+				'CASE WHEN LOWER(h.mode) = \'invert\' THEN h.observation_window_minutes ELSE NULL END',
+				'LOWER(COALESCE(NULLIF(h.subject_label, \'\'), h.subject_key, \'-\'))',
+			],
+			'count' => ['h.matched_call_count'],
+			'threshold_window' => ['h.threshold_count', 'h.observation_window_minutes'],
+			'suppressed_until' => ['h.suppression_expires_at'],
+			'cleared' => ['h.cleared_at'],
+			'reason' => ["CASE WHEN LOWER(COALESCE(h.related_incident_state, '')) = 'accepted' THEN 'accepted' WHEN h.suppression_minutes > 0 THEN 'within suppression period' ELSE 'suppression active' END"],
+			'related_incident' => ['h.related_incident_id'],
+		];
+		$sortKey = $this->validatedSortKey($sortKey, $sortExpressions);
+		$baseQuery =
+			' FROM repeatcaller_incident_suppression_history h
+			 LEFT JOIN repeatcaller_rules r ON r.id = h.rule_id' . $filterSql;
+		$rowsSql =
+			'SELECT h.id, h.related_incident_id, h.rule_id, h.rule_name, h.mode, h.subject_key, h.subject_label,
+				h.caller_normalized, h.caller_display, h.inbound_route_key, h.inbound_route_label, h.did_value,
+				h.matched_call_count, h.threshold_count, h.observation_window_minutes, h.suppression_source,
+				h.suppression_minutes, h.suppression_started_at, h.suppression_expires_at, h.cleared_at,
+				h.related_incident_state, h.detected_at, h.created_at, h.updated_at,
+				r.caller_mode, r.did_scope_mode' . $baseQuery;
+
+		return $this->loadOffsetPage(
+			'SELECT COUNT(*)' . $baseQuery,
+			$rowsSql,
+			[$asOf],
+			$offset,
+			$sortKey,
+			$this->validatedSortDirection($sortDirection),
+			$sortExpressions,
+			'h.id'
+		);
+	}
+
+	private function queryActiveSuppressedIncidents(string $asOf, int $limit): array {
 		$stmt = $this->pdo->prepare(
 			'SELECT h.id, h.related_incident_id, h.rule_id, h.rule_name, h.mode, h.subject_key, h.subject_label,
 				h.caller_normalized, h.caller_display, h.inbound_route_key, h.inbound_route_label, h.did_value,
@@ -800,6 +977,60 @@ final class RepeatCallerRepository {
 		$stmt->execute([$asOf]);
 
 		return $stmt->fetchAll(PDO::FETCH_ASSOC);
+	}
+
+	private function validatedSortKey(string $sortKey, array $expressions): string {
+		if (!array_key_exists($sortKey, $expressions)) {
+			throw new \InvalidArgumentException('Unsupported incident table sort key.');
+		}
+		return $sortKey;
+	}
+
+	private function validatedSortDirection(string $direction): string {
+		$direction = strtolower($direction);
+		if (!in_array($direction, ['asc', 'desc'], true)) {
+			throw new \InvalidArgumentException('Unsupported incident table sort direction.');
+		}
+		return strtoupper($direction);
+	}
+
+	private function loadOffsetPage(string $countSql, string $rowsSql, array $parameters, int $requestedOffset, string $sortKey, string $direction, array $sortExpressions, string $idExpression): array {
+		if ($requestedOffset < 0) {
+			throw new \InvalidArgumentException('Incident table offset must be non-negative.');
+		}
+		$count = $this->pdo->prepare($countSql);
+		$count->execute($parameters);
+		$total = (int)$count->fetchColumn();
+
+		$limit = 25;
+		$offset = $requestedOffset - ($requestedOffset % $limit);
+		if ($total === 0) {
+			$offset = 0;
+		} else {
+			$lastOffset = intdiv($total - 1, $limit) * $limit;
+			$offset = min($offset, $lastOffset);
+		}
+
+		$order = [];
+		foreach ($sortExpressions[$sortKey] as $expression) {
+			$order[] = 'CASE WHEN (' . $expression . ') IS NULL THEN 1 ELSE 0 END ASC';
+			$order[] = $expression . ' ' . $direction;
+		}
+		$order[] = $idExpression . ' DESC';
+		$statement = $this->pdo->prepare($rowsSql . ' ORDER BY ' . implode(', ', $order) . ' LIMIT ? OFFSET ?');
+		foreach ($parameters as $index => $parameter) {
+			$statement->bindValue($index + 1, $parameter);
+		}
+		$statement->bindValue(count($parameters) + 1, $limit, PDO::PARAM_INT);
+		$statement->bindValue(count($parameters) + 2, $offset, PDO::PARAM_INT);
+		$statement->execute();
+
+		return [
+			'rows' => $statement->fetchAll(PDO::FETCH_ASSOC),
+			'total' => $total,
+			'offset' => $offset,
+			'limit' => $limit,
+		];
 	}
 
 	public function loadUiChangeTokens(): array {
@@ -2395,23 +2626,6 @@ final class RepeatCallerRepository {
 				$now,
 			]);
 		}
-	}
-
-	private function didsForScopeMode(array $dids, string $didScopeMode): array {
-		$mode = strtolower(trim($didScopeMode)) === 'selected' ? 'selected' : 'all';
-		$allowedListType = $mode === 'selected' ? 'include' : 'exclude';
-		$filtered = [];
-		foreach ($dids as $did) {
-			if (!is_array($did)) {
-				continue;
-			}
-			if ((string)($did['list_type'] ?? '') !== $allowedListType) {
-				continue;
-			}
-			$filtered[] = $did;
-		}
-
-		return $filtered;
 	}
 
 	private function placeholders(array $values): string {

@@ -34,17 +34,18 @@
 	var currentAlertHistory = [];
 	var currentEngineLastSuccessfulRun = '';
 	var tableBatchSize = 15;
+	var tablePageSize = 25;
 	var tableBatchStates = {};
+	var tablePageStates = {};
+	var tablePageGeneration = {};
+	var tablePreferenceQueues = {};
+	var tablePaginationElements = {};
 	var tableBatchSelectors = [
 		'#rc-rules-table',
-		'#rc-active-incidents-table',
-		'#rc-suppressed-incidents-table',
-		'#rc-recent-incidents-table',
-		'#rc-alert-history-table',
 		'#rc-schedule-table'
 	];
 	var ruleStatusTimers = {};
-	var didRouteActionMode = '';
+	var ruleEditorDirty = false;
 	var alertCallSelfTriggerWarning = 'Alert Call destinations are automatically added to Ignore these callers to reduce the risk of self-triggering if an alert call routes back through a monitored DID.';
 	var alertCallCallerIdSelfTriggerWarning = 'Alert Call Caller IDs are automatically added to Ignore these callers to reduce the risk of self-triggering if an alert call routes back through a monitored DID.';
 	var alertCallSelfTriggerWarningDurationSeconds = 6;
@@ -830,6 +831,34 @@
 		return tableBatchStates[selector];
 	}
 
+	function ensureTablePageState(selector) {
+		if (!tablePageStates[selector]) {
+			var config = pagedTableConfig(selector);
+			var settings = (window.repeatCallerBootstrap || {}).globalSettings || {};
+			var sortKey = String(settings[config.sortKeySetting] || config.defaultSortKey);
+			var sortDirection = String(settings[config.sortDirectionSetting] || config.defaultSortDirection).toLowerCase();
+			if ($.inArray(sortKey, config.sortKeys) === -1) {
+				sortKey = config.defaultSortKey;
+			}
+			if (sortDirection !== 'asc' && sortDirection !== 'desc') {
+				sortDirection = config.defaultSortDirection;
+			}
+			tablePageStates[selector] = {
+				sortKey: sortKey,
+				sortDirection: sortDirection,
+				savedSortKey: sortKey,
+				savedSortDirection: sortDirection,
+				offset: 0,
+				limit: tablePageSize,
+				total: 0,
+				rowCount: 0,
+				loading: false,
+				refreshRequested: false
+			};
+		}
+		return tablePageStates[selector];
+	}
+
 	function tableBatchUnitsFromRows($rows, unitSize) {
 		var units = [];
 		var idx;
@@ -875,9 +904,10 @@
 		}
 		var state = ensureTableBatchState(selector);
 		var unitSize = tableBatchUnitSize(selector);
-		var $rows = $table.find('tbody > tr');
+		var $rows = $table.find('tbody tr');
 		var hasEmptyStateOnly = $rows.length === 1 && $rows.first().hasClass('rc-empty-state');
 		var $controls = tableBatchControlsContainer($table);
+		var pageState = tablePageStates[selector] || null;
 
 		if (!$rows.length || hasEmptyStateOnly) {
 			$rows.show();
@@ -894,7 +924,9 @@
 			state.visibleUnits = tableBatchSize;
 			$rows.show();
 			if ($controls.length) {
-				$controls.hide();
+				$controls.find('.rc-table-show-more').toggle(!!pageState && pageState.hasMore).prop('disabled', !!pageState && pageState.loading);
+				$controls.find('.rc-table-show-less').hide();
+				$controls.toggle(!!pageState && pageState.hasMore);
 			}
 			return;
 		}
@@ -911,7 +943,7 @@
 		});
 
 		if ($controls.length) {
-			$controls.find('.rc-table-show-more').toggle(state.visibleUnits < totalUnits);
+			$controls.find('.rc-table-show-more').toggle(state.visibleUnits < totalUnits || (!!pageState && pageState.hasMore)).prop('disabled', !!pageState && pageState.loading);
 			$controls.find('.rc-table-show-less').toggle(state.visibleUnits > tableBatchSize);
 			$controls.show();
 		}
@@ -920,6 +952,281 @@
 	function updateAllTableRowBatching() {
 		$.each(tableBatchSelectors, function (_, selector) {
 			updateTableRowBatching(selector);
+		});
+	}
+
+	function showMoreTableRows(selector) {
+		if ($.inArray(selector, tableBatchSelectors) === -1) {
+			return;
+		}
+		var state = ensureTableBatchState(selector);
+		state.visibleUnits += tableBatchSize;
+		updateTableRowBatching(selector);
+	}
+
+	function showLessTableRows(selector) {
+		if ($.inArray(selector, tableBatchSelectors) === -1) {
+			return;
+		}
+		var state = ensureTableBatchState(selector);
+		state.visibleUnits = tableBatchSize;
+		updateTableRowBatching(selector);
+	}
+
+	function tableBatchSelectorFromControl($control) {
+		var tableId = $.trim(String($control.closest('.rc-table-batch-controls').attr('data-table-id') || ''));
+		var selector = tableId ? '#' + tableId : '';
+		return $.inArray(selector, tableBatchSelectors) !== -1 ? selector : '';
+	}
+
+	function pagedTableConfig(selector) {
+		if (selector === '#rc-active-incidents-table') {
+			return {
+				table: 'active_incidents',
+				command: 'getincidents',
+				payload: {view: 'active'},
+				rowsKey: 'incidents',
+				defaultSortKey: 'updated',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_active_incidents_sort_key',
+				sortDirectionSetting: 'ui_active_incidents_sort_dir',
+				sortKeys: ['id', 'first', 'rule', 'mode', 'subject', 'caller', 'last', 'count', 'threshold', 'window', 'status', 'updated'],
+				render: function (rows) { renderIncidents(selector, rows, true, false); }
+			};
+		}
+		if (selector === '#rc-recent-incidents-table') {
+			return {
+				table: 'recent_incidents',
+				command: 'getincidents',
+				payload: {view: 'accepted'},
+				rowsKey: 'incidents',
+				defaultSortKey: 'updated',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_recent_incidents_sort_key',
+				sortDirectionSetting: 'ui_recent_incidents_sort_dir',
+				sortKeys: ['id', 'created', 'rule', 'mode', 'subject', 'status', 'accepted_by', 'suppression_expires', 'updated'],
+				render: function (rows) { renderIncidents(selector, rows, false, false); }
+			};
+		}
+		if (selector === '#rc-suppressed-incidents-table') {
+			return {
+				table: 'suppressed_incidents',
+				command: 'getsuppressedincidents',
+				payload: {},
+				rowsKey: 'suppressedIncidents',
+				defaultSortKey: 'time',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_suppressed_incidents_sort_key',
+				sortDirectionSetting: 'ui_suppressed_incidents_sort_dir',
+				sortKeys: ['time', 'rule', 'mode', 'subject', 'count', 'threshold_window', 'suppressed_until', 'cleared', 'reason', 'related_incident'],
+				render: function (rows) { renderSuppressedIncidents(rows, false); }
+			};
+		}
+		if (selector === '#rc-alert-history-table') {
+			return {
+				table: 'alert_history',
+				command: 'getalerthistory',
+				payload: {},
+				rowsKey: 'alertHistory',
+				defaultSortKey: 'time',
+				defaultSortDirection: 'desc',
+				sortKeySetting: 'ui_alert_history_sort_key',
+				sortDirectionSetting: 'ui_alert_history_sort_dir',
+				sortKeys: ['id', 'time', 'rule', 'mode', 'subject', 'event', 'action', 'status', 'stage', 'success', 'failure_detail'],
+				render: function (rows) { renderAlertHistory(rows, false); }
+			};
+		}
+		return null;
+	}
+
+	function tablePaginationControls(selector) {
+		var $table = $(selector);
+		if (!$table.length) {
+			return $();
+		}
+		if (tablePaginationElements[selector]) {
+			return tablePaginationElements[selector];
+		}
+		var tableId = String($table.attr('id') || '');
+		var $controls = $table.closest('.panel-body').find('.rc-history-pagination[data-table-id="' + tableId + '"]').first();
+		if (!$controls.length) {
+			$controls = $('<div class="rc-history-pagination" role="group"/>').attr('data-table-id', tableId);
+			$controls.append($('<button type="button" class="btn btn-xs btn-default rc-page-previous" aria-label="Previous page">‹</button>'));
+			$controls.append($('<span class="rc-pagination-range" aria-live="polite"/>'));
+			$controls.append($('<button type="button" class="btn btn-xs btn-default rc-page-next" aria-label="Next page">›</button>'));
+			var $anchor = $table.closest('.table-responsive');
+			if ($anchor.length) {
+				$anchor.before($controls);
+			} else {
+				$table.before($controls);
+			}
+		}
+		tablePaginationElements[selector] = $controls;
+		return $controls;
+	}
+
+	function updateHistoryPagination(selector) {
+		var config = pagedTableConfig(selector);
+		if (!config) {
+			return;
+		}
+		var state = ensureTablePageState(selector);
+		var $controls = tablePaginationControls(selector);
+		if (!$controls.length) {
+			return;
+		}
+		var first = state.total > 0 ? state.offset + 1 : 0;
+		var last = Math.min(state.offset + state.rowCount, state.total);
+		$controls.find('.rc-pagination-range').text('Showing ' + first + ' to ' + last + ' of ' + state.total);
+		$controls.find('.rc-page-previous').prop('disabled', state.loading || state.offset <= 0);
+		$controls.find('.rc-page-next').prop('disabled', state.loading || state.offset + state.limit >= state.total);
+		$controls.toggleClass('rc-pagination-loading', state.loading);
+	}
+
+	function updateSortHeaders(selector) {
+		var config = pagedTableConfig(selector);
+		if (!config) {
+			return;
+		}
+		var state = ensureTablePageState(selector);
+		$(selector + ' thead th').each(function (index) {
+			var $heading = $(this);
+			var key = config.sortKeys[index];
+			if (!key) {
+				$heading.removeAttr('data-sort-key tabindex role aria-sort').removeClass('rc-sortable rc-sort-active');
+				$heading.find('.rc-sort-arrow').remove();
+				return;
+			}
+			$heading.attr('data-sort-key', key).attr('tabindex', '0').addClass('rc-sortable');
+			$heading.find('.rc-sort-arrow').remove();
+			if (key === state.sortKey) {
+				$heading.addClass('rc-sort-active').attr('aria-sort', state.sortDirection === 'asc' ? 'ascending' : 'descending');
+				$heading.append($('<span class="rc-sort-arrow" aria-hidden="true"/>').text(state.sortDirection === 'asc' ? '▲' : '▼'));
+			} else {
+				$heading.removeClass('rc-sort-active').attr('aria-sort', 'none');
+			}
+		});
+	}
+
+	function requestTablePage(selector, options, force) {
+		var config = pagedTableConfig(selector);
+		if (!config) {
+			return null;
+		}
+		var page = ensureTablePageState(selector);
+		if (page.loading && !force) {
+			return null;
+		}
+		page.loading = true;
+		var generation = (tablePageGeneration[selector] || 0) + 1;
+		tablePageGeneration[selector] = generation;
+		updateHistoryPagination(selector);
+		var payload = {};
+		$.each(config.payload, function (key, value) { payload[key] = value; });
+		payload.offset = page.offset;
+		payload.sort_key = page.sortKey;
+		payload.sort_direction = page.sortDirection;
+		var received = false;
+		return ajax(config.command, payload, function (response) {
+			if (generation !== (tablePageGeneration[selector] || 0) || tablePageStates[selector] !== page) {
+				return;
+			}
+			var rows = $.isArray(response[config.rowsKey]) ? response[config.rowsKey] : [];
+			page.offset = parseInt(response.offset, 10) || 0;
+			page.limit = parseInt(response.limit, 10) || tablePageSize;
+			page.total = Math.max(0, parseInt(response.total, 10) || 0);
+			page.rowCount = rows.length;
+			page.loading = false;
+			received = true;
+			config.render(rows);
+			updateSortHeaders(selector);
+			updateHistoryPagination(selector);
+			if (page.refreshRequested) {
+				page.refreshRequested = false;
+				requestTablePage(selector, options, false);
+			}
+		}, function () {
+			if (generation === (tablePageGeneration[selector] || 0) && tablePageStates[selector] === page && !received) {
+				page.loading = false;
+				page.refreshRequested = false;
+				updateHistoryPagination(selector);
+			}
+		}, options);
+	}
+
+	function loadPagedTable(selector, options) {
+		if (!pagedTableConfig(selector)) {
+			return null;
+		}
+		var state = ensureTablePageState(selector);
+		if (state.loading) {
+			state.refreshRequested = true;
+			return null;
+		}
+		updateSortHeaders(selector);
+		tablePaginationControls(selector);
+		updateHistoryPagination(selector);
+		return requestTablePage(selector, options, false);
+	}
+
+	function changeTablePage(selector, offset) {
+		var state = ensureTablePageState(selector);
+		if (state.loading) {
+			return;
+		}
+		state.offset = Math.max(0, offset);
+		requestTablePage(selector, null, false);
+	}
+
+	function changeTableSort(selector, sortKey) {
+		var config = pagedTableConfig(selector);
+		if (!config || $.inArray(sortKey, config.sortKeys) === -1) {
+			return;
+		}
+		var state = ensureTablePageState(selector);
+		var previousOffset = state.offset;
+		var nextDirection = sortKey === state.sortKey ? (state.sortDirection === 'asc' ? 'desc' : 'asc') : 'asc';
+		var nextSortKey = sortKey;
+		state.sortKey = sortKey;
+		state.sortDirection = nextDirection;
+		state.offset = 0;
+		state.loading = true;
+		var generation = (tablePageGeneration[selector] || 0) + 1;
+		tablePageGeneration[selector] = generation;
+		updateSortHeaders(selector);
+		updateHistoryPagination(selector);
+		var previous = tablePreferenceQueues[selector] || $.Deferred().resolve().promise();
+		tablePreferenceQueues[selector] = previous.then(function () {
+			var deferred = $.Deferred();
+			var saved = false;
+			ajax('saveuisetting', {
+				table: config.table,
+				sort_key: nextSortKey,
+				sort_direction: nextDirection
+			}, function () {
+				saved = true;
+				state.savedSortKey = nextSortKey;
+				state.savedSortDirection = nextDirection;
+			}, function () {
+				deferred.resolve(saved);
+			});
+			return deferred.promise();
+		});
+		tablePreferenceQueues[selector].done(function (saved) {
+			if (generation !== (tablePageGeneration[selector] || 0) || tablePageStates[selector] !== state) {
+				return;
+			}
+			if (!saved) {
+				state.sortKey = state.savedSortKey;
+				state.sortDirection = state.savedSortDirection;
+				state.offset = previousOffset;
+				state.loading = false;
+				updateSortHeaders(selector);
+				updateHistoryPagination(selector);
+				return;
+			}
+			state.loading = false;
+			requestTablePage(selector, null, true);
 		});
 	}
 
@@ -933,23 +1240,25 @@
 		});
 	}
 
-	function rememberIncidents(selector, incidents) {
+	function rememberIncidents(selector, incidents, append) {
 		var rows = (incidents || []).slice();
 		if (selector === '#rc-active-incidents-table') {
-			currentActiveIncidents = rows;
+			currentActiveIncidents = append ? currentActiveIncidents.concat(rows) : rows;
 			return;
 		}
 		if (selector === '#rc-recent-incidents-table') {
-			currentAcceptedIncidents = rows;
+			currentAcceptedIncidents = append ? currentAcceptedIncidents.concat(rows) : rows;
 		}
 	}
 
-	function rememberSuppressedIncidents(items) {
-		currentSuppressedIncidents = (items || []).slice();
+	function rememberSuppressedIncidents(items, append) {
+		var rows = (items || []).slice();
+		currentSuppressedIncidents = append ? currentSuppressedIncidents.concat(rows) : rows;
 	}
 
-	function rememberAlertHistory(items) {
-		currentAlertHistory = (items || []).slice();
+	function rememberAlertHistory(items, append) {
+		var rows = (items || []).slice();
+		currentAlertHistory = append ? currentAlertHistory.concat(rows) : rows;
 	}
 
 	function sameRuleId(item, ruleId) {
@@ -1201,7 +1510,7 @@
 	}
 
 	function didScopeSummary(rule) {
-		return String(rule.did_scope_mode || 'all') === 'selected' ? 'Selected routes' : 'All routes';
+		return String(rule.did_scope_mode || 'all') === 'selected' ? 'Select DIDs' : 'Include All DIDs';
 	}
 
 	function actionsSummary(rule) {
@@ -1507,9 +1816,9 @@
 		$('#rc-rule-start-as-help').text(helpText).toggleClass('text-muted', disabled);
 	}
 
-	function renderIncidents(selector, incidents, active) {
+	function renderIncidents(selector, incidents, active, append) {
 		var rows = [];
-		rememberIncidents(selector, incidents);
+		rememberIncidents(selector, incidents, append);
 		$.each(incidents || [], function (_, i) {
 			var detectionMode = detectionModeLabel(i.mode);
 			var rawState = String(i.state || '');
@@ -1545,13 +1854,18 @@
 					+ '</tr>');
 			}
 		});
-		if (!rows.length) {
+		if (!rows.length && !append) {
 			var emptyColumnCount = $(selector + ' thead th').length || 1;
 			var emptyText = active ? 'No active incidents recorded yet.' : 'No recent incidents recorded yet.';
 			rows.push('<tr class="rc-empty-state"><td colspan="' + emptyColumnCount + '" class="text-muted">' + emptyText + '</td></tr>');
 		}
-		$(selector + ' tbody').html(rows.join(''));
-		updateTableRowBatching(selector);
+		var $tbody = $(selector + ' tbody');
+		if (append) {
+			$tbody.find('.rc-empty-state').remove();
+			if (rows.length) { $tbody.append(rows.join('')); }
+		} else {
+			$tbody.html(rows.join(''));
+		}
 	}
 
 	function formatSuppressedIncidentReason(row) {
@@ -1568,12 +1882,12 @@
 		return 'New incident suppressed until ' + suppressionExpiresAt + ' because suppression was active.';
 	}
 
-	function renderSuppressedIncidents(items) {
+	function renderSuppressedIncidents(items, append) {
 		var $table = $('#rc-suppressed-incidents-table');
 		if (!$table.length) {
 			return;
 		}
-		rememberSuppressedIncidents(items);
+		rememberSuppressedIncidents(items, append);
 		var rows = [];
 		$.each(items || [], function (_, row) {
 			var modeLabel = detectionModeLabel(row.mode || 'repeat');
@@ -1604,15 +1918,20 @@
 				+ '<td>' + actionCell + '</td>'
 				+ '</tr>');
 		});
-		if (!rows.length) {
+		if (!rows.length && !append) {
 			rows.push('<tr class="rc-empty-state"><td colspan="11" class="text-muted">No suppressed incidents recorded yet.</td></tr>');
 		}
-		$table.find('tbody').html(rows.join(''));
-		updateTableRowBatching('#rc-suppressed-incidents-table');
+		var $tbody = $table.find('tbody');
+		if (append) {
+			$tbody.find('.rc-empty-state').remove();
+			if (rows.length) { $tbody.append(rows.join('')); }
+		} else {
+			$tbody.html(rows.join(''));
+		}
 	}
 
-	function renderAlertHistory(items) {
-		rememberAlertHistory(items);
+	function renderAlertHistory(items, append) {
+		rememberAlertHistory(items, append);
 		var modeLabels = {
 			repeat: 'Repeat',
 			invert: 'Invert'
@@ -1631,7 +1950,7 @@
 			var statusKey = normalizeCode(rawStatus);
 			var detail = $.trim(String(rawFailureDetail || ''));
 
-			if (statusKey === 'accepted' || statusKey === 'accepted') {
+			if (statusKey === 'accepted') {
 				return 'Incident accepted';
 			}
 			if (statusKey === 'declined') {
@@ -1731,12 +2050,17 @@
 				+ '<td>' + renderFailureDetailCell(h) + '</td>'
 				+ '</tr>');
 		});
-		if (!rows.length) {
+		if (!rows.length && !append) {
 			var columnCount = $('#rc-alert-history-table thead th').length || 11;
 			rows.push('<tr class="rc-empty-state"><td colspan="' + columnCount + '" class="text-muted">No alert history recorded yet.</td></tr>');
 		}
-		$('#rc-alert-history-table tbody').html(rows.join(''));
-		updateTableRowBatching('#rc-alert-history-table');
+		var $tbody = $('#rc-alert-history-table tbody');
+		if (append) {
+			$tbody.find('.rc-empty-state').remove();
+			if (rows.length) { $tbody.append(rows.join('')); }
+		} else {
+			$tbody.html(rows.join(''));
+		}
 	}
 
 	function collectRouteList($list) {
@@ -1756,28 +2080,77 @@
 		return items;
 	}
 
-	function addRouteToList($list, route, listType) {
-		if (!route || !route.route_key) {
-			return;
-		}
-		var exists = false;
-		$list.find('li').each(function () {
-			if ($(this).data('route') && $(this).data('route').route_key === route.route_key) {
-				exists = true;
-				return false;
+	function updateDidRouteListDefaults() {
+		$.each([
+			{selector: '#rc-did-include-list', label: 'All DIDs'},
+			{selector: '#rc-did-exclude-list', label: 'No DIDs'}
+		], function (_, config) {
+			var $list = $(config.selector);
+			var hasRoutes = false;
+			$list.find('li').each(function () {
+				if ($(this).data('route')) {
+					hasRoutes = true;
+					return false;
+				}
+			});
+			$list.find('.rc-route-list-default').remove();
+			if (!hasRoutes) {
+				$list.append($('<li class="rc-route-list-default"/>').text(config.label));
 			}
 		});
-		if (exists) {
-			return;
+	}
+
+	function refreshDidRoutePicker() {
+		var selectedRouteKey = $.trim(String($('#rc-route-pick').val() || ''));
+		var options = ['<option value="" selected>Select an inbound route…</option>'];
+		$.each(window._rcInboundRoutes || [], function (_, route) {
+			var routeKey = String(route.route_key || '');
+			if (!routeKey || routeListContains($('#rc-did-include-list'), routeKey) || routeListContains($('#rc-did-exclude-list'), routeKey)) {
+				return;
+			}
+			options.push('<option value="' + esc(routeKey) + '">' + esc((route.route_label || routeKey) + ' [' + routeKey + ']') + '</option>');
+		});
+		$('#rc-route-pick').html(options.join(''));
+		if (selectedRouteKey && findRoute(selectedRouteKey) && !routeListContains($('#rc-did-include-list'), selectedRouteKey) && !routeListContains($('#rc-did-exclude-list'), selectedRouteKey)) {
+			$('#rc-route-pick').val(selectedRouteKey);
+		} else {
+			$('#rc-route-pick').val('');
 		}
+	}
+
+	function addRouteToList($list, route, listType) {
+		if (!route || !route.route_key) {
+			return false;
+		}
+		if (routeListContains($('#rc-did-include-list'), route.route_key) || routeListContains($('#rc-did-exclude-list'), route.route_key)) {
+			return false;
+		}
+		if (listType === 'include' && collectRouteList($('#rc-did-exclude-list')).length) {
+			return false;
+		}
+		if (listType === 'exclude' && collectRouteList($('#rc-did-include-list')).length) {
+			return false;
+		}
+		$list.find('.rc-route-list-default').remove();
 		var $li = $('<li/>').text((route.route_label || route.route_key) + ' [' + route.route_key + ']');
 		$li.data('route', route);
 		$li.data('listType', listType);
 		$li.append(' ');
-		$li.append($('<button type="button" class="btn btn-xs btn-link">remove</button>').on('click', function () {
+		var $removeButton = $('<button type="button" class="btn btn-xs btn-link">remove</button>').prop('disabled', $('#rc-rule-did-mode').val() !== 'selected').on('click', function () {
+			if ($('#rc-rule-did-mode').val() !== 'selected') {
+				return;
+			}
 			$li.remove();
-		}));
+			updateDidRouteListDefaults();
+			refreshDidRoutePicker();
+			updateDidScopeEditorState();
+			updateDidRouteActionButtonState();
+			markRuleEditorDirty();
+		});
+		$li.append($removeButton);
 		$list.append($li);
+		refreshDidRoutePicker();
+		return true;
 	}
 
 	function normaliseAlertCallDestinationEntries(rawValue, defaultKeepTryingEnabled) {
@@ -1945,6 +2318,7 @@
 			$li.remove();
 			updateAlertCallDestinationOrderLabels();
 			updateAlertCallDestinationAddButtonState();
+			markRuleEditorDirty();
 		});
 		$li.append($order).append($dragHandle).append($value).append($keepTryingToggle).append($remove);
 		$keepTryingToggle.toggleClass('rc-control-disabled', !orderedStrategy);
@@ -1974,6 +2348,7 @@
 				$li.before($source);
 			}
 			updateAlertCallDestinationOrderLabels();
+			markRuleEditorDirty();
 		});
 
 		return $li;
@@ -2042,8 +2417,11 @@
 		var raw = $('#rc-rule-alert-call-destination-input').val();
 		var defaultKeepTrying = $('#rc-rule-alert-call-strategy').val() === 'ordered';
 		var autoAddedIgnoreEntries = 0;
+		var addedDestinations = 0;
 		$.each(normaliseAlertCallDestinationEntries(raw, defaultKeepTrying), function (_, destinationRow) {
-			addAlertCallDestination(destinationRow.destination, destinationRow.keepTrying);
+			if (addAlertCallDestination(destinationRow.destination, destinationRow.keepTrying)) {
+				addedDestinations += 1;
+			}
 			if (ensureCallerExcludeDestination(destinationRow.destination)) {
 				autoAddedIgnoreEntries += 1;
 			}
@@ -2051,6 +2429,9 @@
 		$('#rc-rule-alert-call-destination-input').val('');
 		if (autoAddedIgnoreEntries > 0) {
 			showAlertCallSelfTriggerWarning();
+		}
+		if (addedDestinations > 0 || autoAddedIgnoreEntries > 0) {
+			markRuleEditorDirty();
 		}
 		updateAlertCallDestinationAddButtonState();
 		return {
@@ -2219,10 +2600,13 @@
 		$('#rc-rule-alert-call-callerid').val('');
 		$('#rc-did-include-list').empty();
 		$('#rc-did-exclude-list').empty();
+		updateDidRouteListDefaults();
 		$('#rc-schedule-table tbody').empty();
 		addScheduleRow(-1, '00:00', '24:00', true);
 		updateAlertCallAndEmailState();
 		syncAlertCallCallerIdSafeguardState();
+		ruleEditorDirty = false;
+		updateRuleTestEmailState();
 	}
 
 	function ensureRecordingOptionExists(recordingId) {
@@ -2244,60 +2628,76 @@
 		return /^\+?\d+$/.test(candidate);
 	}
 
-	function clearOppositeDidScopeRows(nextMode) {
-		if (nextMode === 'selected') {
-			$('#rc-did-exclude-list').empty();
-			return;
-		}
-		if (nextMode === 'all') {
-			$('#rc-did-include-list').empty();
-		}
-	}
-
 	function clearDidRouteActionState() {
-		didRouteActionMode = '';
-		$('#rc-add-did-include, #rc-add-did-exclude').removeClass('rc-route-action-active');
-		$('#rc-route-pick').prop('disabled', true).addClass('rc-control-disabled').attr('aria-disabled', 'true');
+		$('#rc-route-pick').val('');
+		$('#rc-route-pick').prop('disabled', false).removeClass('rc-control-disabled').attr('aria-disabled', 'false');
+		updateDidRouteActionButtonState();
 	}
 
-	function activateDidRouteAction(actionMode) {
+	function routeListContains($list, routeKey) {
+		var exists = false;
+		$list.find('li').each(function () {
+			var route = $(this).data('route');
+			if (route && String(route.route_key) === String(routeKey)) {
+				exists = true;
+				return false;
+			}
+		});
+		return exists;
+	}
+
+	function updateDidRouteActionButtonState() {
+		var routeEditorEnabled = $('#rc-rule-did-mode').val() === 'selected';
+		var hasExplicitIncludes = collectRouteList($('#rc-did-include-list')).length > 0;
+		var hasExplicitExclusions = collectRouteList($('#rc-did-exclude-list')).length > 0;
+		var routeKey = $.trim(String($('#rc-route-pick').val() || ''));
+		var route = routeKey !== '' ? findRoute(routeKey) : null;
+		var routeAlreadyUsed = !!route && (routeListContains($('#rc-did-include-list'), routeKey) || routeListContains($('#rc-did-exclude-list'), routeKey));
+		var canInclude = routeEditorEnabled && !hasExplicitExclusions && !!route && !routeAlreadyUsed;
+		var canExclude = routeEditorEnabled && !hasExplicitIncludes && !!route && !routeAlreadyUsed;
+
+		$('#rc-add-did-include').prop('disabled', !canInclude).toggleClass('disabled', !canInclude).show();
+		$('#rc-add-did-exclude').prop('disabled', !canExclude).toggleClass('disabled', !canExclude).show();
+	}
+
+	function applyDidRouteAction(actionMode) {
 		if (actionMode !== 'include' && actionMode !== 'exclude') {
-			return;
+			return false;
 		}
 		if (actionMode === 'include' && $('#rc-add-did-include').prop('disabled')) {
-			return;
+			return false;
 		}
 		if (actionMode === 'exclude' && $('#rc-add-did-exclude').prop('disabled')) {
-			return;
+			return false;
 		}
-		didRouteActionMode = actionMode;
-		$('#rc-add-did-include, #rc-add-did-exclude').removeClass('rc-route-action-active');
-		if (actionMode === 'include') {
-			$('#rc-add-did-include').addClass('rc-route-action-active');
-		} else {
-			$('#rc-add-did-exclude').addClass('rc-route-action-active');
+		var routeKey = $.trim(String($('#rc-route-pick').val() || ''));
+		if (routeKey === '') {
+			return false;
 		}
-		$('#rc-route-pick').prop('disabled', false).removeClass('rc-control-disabled').attr('aria-disabled', 'false');
+		var route = findRoute(routeKey);
+		var added = actionMode === 'include'
+			? addRouteToList($('#rc-did-include-list'), route, 'include')
+			: addRouteToList($('#rc-did-exclude-list'), route, 'exclude');
+		if (added) {
+			updateDidScopeEditorState();
+			markRuleEditorDirty();
+		}
+		return added;
 	}
 
 	function updateDidScopeEditorState() {
-		var didMode = $('#rc-rule-did-mode').val() === 'selected' ? 'selected' : 'all';
-		var selectedMode = didMode === 'selected';
+		var routeEditorEnabled = $('#rc-rule-did-mode').val() === 'selected';
+		var includesEnabled = routeEditorEnabled && collectRouteList($('#rc-did-exclude-list')).length === 0;
+		var exclusionsEnabled = routeEditorEnabled && collectRouteList($('#rc-did-include-list')).length === 0;
 		clearDidRouteActionState();
-
-		$('#rc-add-did-include')
-			.prop('disabled', !selectedMode)
-			.toggleClass('disabled', !selectedMode)
-			.show();
-		$('#rc-add-did-exclude')
-			.prop('disabled', selectedMode)
-			.toggleClass('disabled', selectedMode)
-			.show();
-
-		$('#rc-did-include-col').toggle(selectedMode);
-		$('#rc-did-exclude-col').toggle(!selectedMode);
-		$('#rc-did-include-list').toggleClass('rc-control-disabled', !selectedMode).attr('aria-disabled', selectedMode ? 'false' : 'true');
-		$('#rc-did-exclude-list').toggleClass('rc-control-disabled', selectedMode).attr('aria-disabled', selectedMode ? 'true' : 'false');
+		$('#rc-did-include-col, #rc-did-exclude-col').show();
+		$('#rc-route-pick').prop('disabled', !routeEditorEnabled).toggleClass('rc-control-disabled', !routeEditorEnabled).attr('aria-disabled', routeEditorEnabled ? 'false' : 'true');
+		$('#rc-did-route-actions-col').toggleClass('rc-control-disabled', !routeEditorEnabled).attr('aria-disabled', routeEditorEnabled ? 'false' : 'true');
+		$('#rc-did-include-col').toggleClass('rc-control-disabled', !includesEnabled).attr('aria-disabled', includesEnabled ? 'false' : 'true');
+		$('#rc-did-exclude-col').toggleClass('rc-control-disabled', !exclusionsEnabled).attr('aria-disabled', exclusionsEnabled ? 'false' : 'true');
+		$('#rc-did-include-list').toggleClass('rc-control-disabled', !includesEnabled).attr('aria-disabled', includesEnabled ? 'false' : 'true').find('button').prop('disabled', !includesEnabled);
+		$('#rc-did-exclude-list').toggleClass('rc-control-disabled', !exclusionsEnabled).attr('aria-disabled', exclusionsEnabled ? 'false' : 'true').find('button').prop('disabled', !exclusionsEnabled);
+		updateDidRouteActionButtonState();
 	}
 
 	function updateCallerScopeEditorState() {
@@ -2422,6 +2822,7 @@
 			$row.remove();
 			normalizeScheduleEditorState();
 			updateTableRowBatching('#rc-schedule-table');
+			markRuleEditorDirty();
 		})));
 		$row.find('.rc-schedule-day, .rc-schedule-start-hour, .rc-schedule-start-minute').on('change', function () {
 			applyScheduleRowState($row);
@@ -2437,6 +2838,14 @@
 		$('#rc-schedule-table tbody').append($row);
 		normalizeScheduleEditorState();
 		updateTableRowBatching('#rc-schedule-table');
+	}
+
+	function addScheduleRowFromEditor() {
+		var rowCount = $('#rc-schedule-table tbody tr').length;
+		addScheduleRow();
+		if ($('#rc-schedule-table tbody tr').length > rowCount) {
+			markRuleEditorDirty();
+		}
 	}
 
 	function applyScheduleRowState($row) {
@@ -2567,6 +2976,28 @@
 		return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate);
 	}
 
+	function hasValidRuleEmailRecipients() {
+		var recipients = normaliseRuleEmailRecipients($('#rc-rule-email-recipients').val());
+		if (!recipients.length) {
+			return false;
+		}
+		for (var i = 0; i < recipients.length; i += 1) {
+			if (!isValidRuleEmailRecipient(recipients[i])) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	function updateRuleTestEmailState() {
+		$('#rc-rule-test-email').prop('disabled', ruleEditorDirty || !hasValidRuleEmailRecipients());
+	}
+
+	function markRuleEditorDirty() {
+		ruleEditorDirty = true;
+		updateRuleTestEmailState();
+	}
+
 	function saveRule(onDone) {
 		var schedules = collectSchedules();
 		if (schedules === null) {
@@ -2596,12 +3027,7 @@
 		var didScopeMode = $('#rc-rule-did-mode').val() === 'selected' ? 'selected' : 'all';
 		var didIncludes = collectRouteList($('#rc-did-include-list'));
 		var didExcludes = collectRouteList($('#rc-did-exclude-list'));
-		var dids = didScopeMode === 'selected' ? didIncludes : didExcludes;
-		if (didScopeMode === 'selected' && didIncludes.length < 1) {
-			showMessage('Selected DID scope requires at least one included inbound route.', 'error');
-			if (onDone) { onDone(); }
-			return;
-		}
+		var dids = didIncludes.concat(didExcludes);
 		updateAlertCallDestinationHiddenField();
 		var callDestinations = normaliseAlertCallDestinationEntries($('#rc-rule-alert-call-destinations').val(), true);
 		var alertCallCallerId = $.trim(String($('#rc-rule-alert-call-callerid').val() || ''));
@@ -2720,8 +3146,14 @@
 
 			$('#rc-did-include-list').empty();
 			$('#rc-did-exclude-list').empty();
-			$.each((rule.did_lists && rule.did_lists.include) || [], function (_, row) { addRouteToList($('#rc-did-include-list'), row, 'include'); });
-			$.each((rule.did_lists && rule.did_lists.exclude) || [], function (_, row) { addRouteToList($('#rc-did-exclude-list'), row, 'exclude'); });
+			var loadedDidIncludes = (rule.did_lists && rule.did_lists.include) || [];
+			$.each(loadedDidIncludes, function (_, row) { addRouteToList($('#rc-did-include-list'), row, 'include'); });
+			if (!loadedDidIncludes.length) {
+				$.each((rule.did_lists && rule.did_lists.exclude) || [], function (_, row) { addRouteToList($('#rc-did-exclude-list'), row, 'exclude'); });
+			}
+			updateDidRouteListDefaults();
+			refreshDidRoutePicker();
+			updateDidScopeEditorState();
 
 			$('#rc-schedule-table tbody').empty();
 			$.each(rule.schedules || [], function (_, s) {
@@ -2738,6 +3170,8 @@
 			updateAlertCallCallerIdState();
 			updateAlertCallAndEmailState();
 			syncAlertCallCallerIdSafeguardState();
+			ruleEditorDirty = false;
+			updateRuleTestEmailState();
 			scrollToRuleEditor();
 		});
 	}
@@ -2749,23 +3183,11 @@
 	}
 
 	function loadActiveIncidents(options) {
-		var opts = options || {};
-		if ($('#rc-active-incidents-table').length) {
-			return ajax('getincidents', {view: 'active'}, function (response) {
-				renderIncidents('#rc-active-incidents-table', response.incidents || [], true);
-			}, null, {silent: !!opts.silent});
-		}
-		return $.Deferred().resolve().promise();
+		return $('#rc-active-incidents-table').length ? loadPagedTable('#rc-active-incidents-table', options) : $.Deferred().resolve().promise();
 	}
 
 	function loadAcceptedIncidents(options) {
-		var opts = options || {};
-		if ($('#rc-recent-incidents-table').length) {
-			return ajax('getincidents', {view: 'accepted'}, function (response) {
-				renderIncidents('#rc-recent-incidents-table', response.incidents || [], false);
-			}, null, {silent: !!opts.silent});
-		}
-		return $.Deferred().resolve().promise();
+		return $('#rc-recent-incidents-table').length ? loadPagedTable('#rc-recent-incidents-table', options) : $.Deferred().resolve().promise();
 	}
 
 	function loadIncidents(options) {
@@ -2773,23 +3195,17 @@
 	}
 
 	function loadSuppressedIncidents(options) {
-		var opts = options || {};
 		if (!$('#rc-suppressed-incidents-table').length) {
 			return $.Deferred().resolve().promise();
 		}
-		return ajax('getsuppressedincidents', {}, function (response) {
-			renderSuppressedIncidents(response.suppressedIncidents || []);
-		}, null, {silent: !!opts.silent});
+		return loadPagedTable('#rc-suppressed-incidents-table', options);
 	}
 
 	function loadAlertHistory(options) {
-		var opts = options || {};
 		if (!$('#rc-alert-history-table').length) {
 			return $.Deferred().resolve().promise();
 		}
-		return ajax('getalerthistory', {}, function (response) {
-			renderAlertHistory(response.alertHistory || []);
-		}, null, {silent: !!opts.silent});
+		return loadPagedTable('#rc-alert-history-table', options);
 	}
 
 	function loadEngineStatus(options) {
@@ -2801,12 +3217,9 @@
 
 	function loadInboundRoutes() {
 		ajax('getinboundroutes', {}, function (response) {
-			var options = [];
-			$.each(response.routes || [], function (_, r) {
-				options.push('<option value="' + esc(r.route_key) + '">' + esc((r.route_label || r.route_key) + ' [' + r.route_key + ']') + '</option>');
-			});
-			$('#rc-route-pick').html(options.join(''));
 			window._rcInboundRoutes = response.routes || [];
+			refreshDidRoutePicker();
+			updateDidRouteListDefaults();
 			updateDidScopeEditorState();
 		});
 	}
@@ -2870,6 +3283,20 @@
 	}
 
 	function bindEvents() {
+		$(document).off('click.repeatcaller', '.rc-table-show-more').on('click.repeatcaller', '.rc-table-show-more', function () {
+			var selector = tableBatchSelectorFromControl($(this));
+			if (selector) {
+				showMoreTableRows(selector);
+			}
+		});
+
+		$(document).off('click.repeatcaller', '.rc-table-show-less').on('click.repeatcaller', '.rc-table-show-less', function () {
+			var selector = tableBatchSelectorFromControl($(this));
+			if (selector) {
+				showLessTableRows(selector);
+			}
+		});
+
 		$(document).off('click.repeatcaller', '.rc-alert-call-language-sample').on('click.repeatcaller', '.rc-alert-call-language-sample', function () {
 			var $button = $(this);
 			if (alertCallSampleLocked) {
@@ -2930,26 +3357,33 @@
 			});
 		});
 
-		$(document).off('click.repeatcaller', '.rc-table-show-more').on('click.repeatcaller', '.rc-table-show-more', function () {
-			var tableId = $.trim(String($(this).closest('.rc-table-batch-controls').attr('data-table-id') || ''));
-			if (tableId === '') {
-				return;
+		$(document).off('click.repeatcaller', '.rc-history-pagination .rc-page-previous').on('click.repeatcaller', '.rc-history-pagination .rc-page-previous', function () {
+			var tableId = $.trim(String($(this).closest('.rc-history-pagination').attr('data-table-id') || ''));
+			var selector = tableId ? '#' + tableId : '';
+			if (selector && pagedTableConfig(selector)) {
+				var state = ensureTablePageState(selector);
+				changeTablePage(selector, state.offset - state.limit);
 			}
-			var selector = '#' + tableId;
-			var state = ensureTableBatchState(selector);
-			state.visibleUnits += tableBatchSize;
-			updateTableRowBatching(selector);
 		});
 
-		$(document).off('click.repeatcaller', '.rc-table-show-less').on('click.repeatcaller', '.rc-table-show-less', function () {
-			var tableId = $.trim(String($(this).closest('.rc-table-batch-controls').attr('data-table-id') || ''));
-			if (tableId === '') {
+		$(document).off('click.repeatcaller', '.rc-history-pagination .rc-page-next').on('click.repeatcaller', '.rc-history-pagination .rc-page-next', function () {
+			var tableId = $.trim(String($(this).closest('.rc-history-pagination').attr('data-table-id') || ''));
+			var selector = tableId ? '#' + tableId : '';
+			if (selector && pagedTableConfig(selector)) {
+				var state = ensureTablePageState(selector);
+				changeTablePage(selector, state.offset + state.limit);
+			}
+		});
+
+		$(document).off('click.repeatcaller keydown.repeatcaller', 'th.rc-sortable').on('click.repeatcaller keydown.repeatcaller', 'th.rc-sortable', function (event) {
+			if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') {
 				return;
 			}
-			var selector = '#' + tableId;
-			var state = ensureTableBatchState(selector);
-			state.visibleUnits = tableBatchSize;
-			updateTableRowBatching(selector);
+			if (event.type === 'keydown') {
+				event.preventDefault();
+			}
+			var selector = '#' + String($(this).closest('table').attr('id') || '');
+			changeTableSort(selector, String($(this).attr('data-sort-key') || ''));
 		});
 
 		$('#rc-rule-alert-call-destination-add').off('click.repeatcaller').on('click.repeatcaller', function (event) {
@@ -3075,9 +3509,10 @@
 				suppression_history_prune_policy: $('#rc-setting-suppression-prune').val()
 			}, function (response) {
 				showMessage(response.message || 'Pruning completed.', 'success');
-				renderAlertHistory(response.alertHistory || []);
+				loadAlertHistory({silent: true});
 				loadSuppressedIncidents({silent: true});
-				renderIncidents('#rc-recent-incidents-table', response.recentIncidents || [], false);
+				loadAcceptedIncidents({silent: true});
+				loadActiveIncidents({silent: true});
 				loadEngineStatus();
 				syncChangeToken();
 			}, function () {
@@ -3093,7 +3528,7 @@
 			ajax('clearalerthistory', {}, function (response) {
 				var deletedCount = parseInt((response && response.deleted_count) || 0, 10) || 0;
 				showMessage('Alert History cleared (' + deletedCount + ' rows).', 'success');
-				renderAlertHistory((response && response.alertHistory) || []);
+				loadAlertHistory({silent: true});
 				syncChangeToken();
 			}, function () {
 				endAction();
@@ -3114,7 +3549,7 @@
 				$button.text('Clearing...');
 				ajax('clearsuppression', {suppression_history_id: historyId}, function (response) {
 					showMessage(response.message || 'Suppression cleared.', 'success');
-					renderSuppressedIncidents(response.suppressedIncidents || []);
+					loadSuppressedIncidents({silent: true});
 					renderEngine(response.engineStatus || {});
 					syncChangeToken();
 					scrollToPageTop();
@@ -3144,10 +3579,9 @@
 		});
 
 		$('#rc-cancel-edit').off('click.repeatcaller').on('click.repeatcaller', function () { resetRuleEditor(); });
-		$('#rc-add-schedule').off('click.repeatcaller').on('click.repeatcaller', function () { addScheduleRow(); });
+		$('#rc-add-schedule').off('click.repeatcaller').on('click.repeatcaller', function () { addScheduleRowFromEditor(); });
 		$('#rc-rule-caller-mode').off('change.repeatcaller').on('change.repeatcaller', function () { updateCallerScopeEditorState(); });
 		$('#rc-rule-did-mode').off('change.repeatcaller').on('change.repeatcaller', function () {
-			clearOppositeDidScopeRows($('#rc-rule-did-mode').val() === 'selected' ? 'selected' : 'all');
 			updateDidScopeEditorState();
 		});
 		$('#rc-rule-alert-call-enabled').off('change.repeatcaller').on('change.repeatcaller', function () {
@@ -3170,6 +3604,28 @@
 			}
 		});
 		$('#rc-rule-email-enabled').off('change.repeatcaller').on('change.repeatcaller', function () { updateAlertCallAndEmailState(); });
+		$('.rc-editor-panel').off('change.repeatcaller-dirty input.repeatcaller-dirty').on('change.repeatcaller-dirty input.repeatcaller-dirty', function () {
+			markRuleEditorDirty();
+		});
+		$('#rc-rule-test-email').off('click.repeatcaller').on('click.repeatcaller', function () {
+			var $button = $(this);
+			if ($button.prop('disabled')) {
+				return;
+			}
+			beginAction();
+			withBusy($button, function (done) {
+				$button.text('Sending...');
+				ajax('testruleemail', {
+					rule_id: $('#rc-rule-id').val()
+				}, function (response) {
+					showMessage(response.message || 'Test email sent.', 'success');
+				}, function () {
+					done();
+					updateRuleTestEmailState();
+					endAction();
+				});
+			});
+		});
 		$('#rc-save-rule').off('click.repeatcaller').on('click.repeatcaller', function () {
 			var $button = $(this);
 			if ($('#rc-rule-enabled').is(':checked') && !isValidDefaultCountryCode($('#rc-setting-country').val())) {
@@ -3188,20 +3644,13 @@
 		});
 
 		$('#rc-add-did-include').off('click.repeatcaller').on('click.repeatcaller', function () {
-			activateDidRouteAction('include');
+			applyDidRouteAction('include');
 		});
 		$('#rc-add-did-exclude').off('click.repeatcaller').on('click.repeatcaller', function () {
-			activateDidRouteAction('exclude');
+			applyDidRouteAction('exclude');
 		});
 		$('#rc-route-pick').off('change.repeatcaller').on('change.repeatcaller', function () {
-			var route = findRoute($('#rc-route-pick').val());
-			if (didRouteActionMode === 'include') {
-				addRouteToList($('#rc-did-include-list'), route, 'include');
-				return;
-			}
-			if (didRouteActionMode === 'exclude') {
-				addRouteToList($('#rc-did-exclude-list'), route, 'exclude');
-			}
+			updateDidRouteActionButtonState();
 		});
 
 		$(document).off('click.repeatcaller', '.rc-edit-rule').on('click.repeatcaller', '.rc-edit-rule', function () {
@@ -3252,8 +3701,8 @@
 			beginAction();
 			ajax('acceptincident', {incident_id: incidentId}, function (response) {
 				showMessage(response.message || 'Incident accepted.', 'success');
-				renderIncidents('#rc-active-incidents-table', response.activeIncidents || [], true);
-				renderIncidents('#rc-recent-incidents-table', response.recentIncidents || [], false);
+				loadActiveIncidents({silent: true});
+				loadAcceptedIncidents({silent: true});
 				loadEngineStatus();
 				syncChangeToken();
 			}, function () {

@@ -4,7 +4,7 @@
  *
  * Repeated inbound caller detection, incidents, and alerting.
  *
- * @copyright 2026 20 Telecom Ltd (trading as 20tele.com)
+ * @copyright 2026 © 20 Telecom Ltd, trading as FreePBX UK.
  * @license   GPLv3+
  */
 
@@ -13,13 +13,14 @@ namespace FreePBX\modules;
 class Repeatcaller implements \BMO {
 
 	/** Fallback only. Authoritative version lives in module.xml. */
-	const VERSION = '1.0.2';
+	const VERSION = '1.1.0';
 	const CSRF_SESSION_KEY = 'repeatcaller_csrf_token';
 	const REPEAT_MODE_NEVER = 'never';
 	const REPEAT_MODE_FIVE_MINUTES = '5m';
 	const REPEAT_MODE_HOURLY = 'hourly';
 	const REPEAT_MODE_DAILY = 'daily';
 	const REPEAT_MODE_ESCALATING = 'escalating';
+	const TABLE_PAGE_SIZE = 25;
 	const AJAX_COMMANDS = [
 		'getenginestatus',
 		'getalertcalllanguagestatus',
@@ -38,10 +39,12 @@ class Repeatcaller implements \BMO {
 		'getalerthistory',
 		'clearsuppression',
 		'getuichangetoken',
+		'saveuisetting',
 		'setsnooze',
 		'resumemonitoring',
 		'prunehistory',
 		'clearalerthistory',
+		'testruleemail',
 	];
 
 	private $settingsDefaults = [
@@ -55,6 +58,14 @@ class Repeatcaller implements \BMO {
 		'incident_history_prune_policy' => 'daily',
 		'alert_history_prune_policy' => 'daily',
 		'suppression_history_prune_policy' => 'daily',
+		'ui_active_incidents_sort_key' => 'updated',
+		'ui_active_incidents_sort_dir' => 'desc',
+		'ui_recent_incidents_sort_key' => 'updated',
+		'ui_recent_incidents_sort_dir' => 'desc',
+		'ui_suppressed_incidents_sort_key' => 'time',
+		'ui_suppressed_incidents_sort_dir' => 'desc',
+		'ui_alert_history_sort_key' => 'time',
+		'ui_alert_history_sort_dir' => 'desc',
 	];
 
 	/** @var \FreePBX */
@@ -114,6 +125,15 @@ class Repeatcaller implements \BMO {
 		}
 
 		try {
+			$hasCurrentDidSemantics = false;
+			if (!empty($backup['settings']) && is_array($backup['settings'])) {
+				foreach ($backup['settings'] as $row) {
+					if (is_array($row) && (string)($row['setting_key'] ?? '') === 'did_scope_semantics_migrated_1_0_3') {
+						$hasCurrentDidSemantics = true;
+						break;
+					}
+				}
+			}
 			if (!empty($backup['settings']) && is_array($backup['settings'])) {
 				foreach ($backup['settings'] as $row) {
 					if (isset($row['setting_key']) && array_key_exists((string)$row['setting_key'], $this->settingsDefaults)) {
@@ -126,6 +146,16 @@ class Repeatcaller implements \BMO {
 				foreach ($backup['rules'] as $rule) {
 					if (!is_array($rule) || empty($rule['name'])) {
 						continue;
+					}
+					$didScopeMode = (string)($rule['did_scope_mode'] ?? 'all') === 'selected' ? 'selected' : 'all';
+					$didIncludes = $rule['did_lists']['include'] ?? [];
+					$didExcludes = $rule['did_lists']['exclude'] ?? [];
+					if (!$hasCurrentDidSemantics && $didScopeMode === 'all' && !empty($didExcludes)) {
+						$didScopeMode = 'selected';
+						$didIncludes = [];
+					}
+					if (!empty($didIncludes)) {
+						$didExcludes = [];
 					}
 					$repository->saveRule([
 						'name' => (string)$rule['name'],
@@ -146,7 +176,7 @@ class Repeatcaller implements \BMO {
 						'observation_window_minutes' => (int)($rule['observation_window_minutes'] ?? 60),
 						'caller_mode' => (string)($rule['caller_mode'] ?? 'any'),
 						'exclude_withheld' => !empty($rule['exclude_withheld']) ? 1 : 0,
-						'did_scope_mode' => (string)($rule['did_scope_mode'] ?? 'all'),
+						'did_scope_mode' => $didScopeMode,
 						'alert_reminder_mode_override' => (string)($rule['alert_reminder_mode_override'] ?? ''),
 						'suppression_minutes_override' => $rule['suppression_minutes_override'] !== null && $rule['suppression_minutes_override'] !== ''
 							? (int)$rule['suppression_minutes_override']
@@ -163,10 +193,10 @@ class Repeatcaller implements \BMO {
 						'dids' => array_merge(
 							array_map(function ($row) {
 								return ['list_type' => 'include', 'route_key' => (string)$row['route_key'], 'route_label' => (string)$row['route_label'], 'did_value' => $row['did_value'], 'cid_value' => $row['cid_value']];
-							}, $rule['did_lists']['include'] ?? []),
+							}, $didIncludes),
 							array_map(function ($row) {
 								return ['list_type' => 'exclude', 'route_key' => (string)$row['route_key'], 'route_label' => (string)$row['route_label'], 'did_value' => $row['did_value'], 'cid_value' => $row['cid_value']];
-							}, $rule['did_lists']['exclude'] ?? [])
+							}, $didExcludes)
 						),
 					], $this->now());
 				}
@@ -202,9 +232,6 @@ class Repeatcaller implements \BMO {
 			'engineStatus' => $data['engineStatus'],
 			'globalSettings' => $data['globalSettings'],
 			'rules' => $data['rules'],
-			'activeIncidents' => $data['activeIncidents'],
-			'recentIncidents' => $data['recentIncidents'],
-			'alertHistory' => $data['alertHistory'],
 			'inboundRoutes' => $data['inboundRoutes'],
 			'systemRecordings' => $data['systemRecordings'],
 			'alertCallLanguageSupport' => $data['alertCallLanguageSupport'],
@@ -241,10 +268,12 @@ class Repeatcaller implements \BMO {
 				case 'getalerthistory': return $this->rcHandleGetAlertHistory();
 				case 'clearsuppression': return $this->rcHandleClearSuppression();
 				case 'getuichangetoken': return $this->rcHandleGetUiChangeToken();
+				case 'saveuisetting': return $this->rcHandleSaveUiSetting();
 				case 'setsnooze': return $this->rcHandleSetSnooze();
 				case 'resumemonitoring': return $this->rcHandleResumeMonitoring();
 				case 'prunehistory': return $this->rcHandlePruneHistory();
 				case 'clearalerthistory': return $this->rcHandleClearAlertHistory();
+				case 'testruleemail': return $this->rcHandleTestRuleEmail();
 			}
 		} catch (\Throwable $e) {
 			$this->logError('AJAX command "' . $command . '" failed: ' . $e->getMessage());
@@ -334,9 +363,6 @@ class Repeatcaller implements \BMO {
 			'engineStatus' => $this->rcEngineStatus($settings),
 			'globalSettings' => $settings,
 			'rules' => $repository->loadRulesSummary(),
-			'activeIncidents' => $repository->loadIncidents('active', 100),
-			'recentIncidents' => $repository->loadIncidents('accepted', 200),
-			'alertHistory' => $repository->loadIncidentAlertHistory(200),
 			'inboundRoutes' => $repository->loadInboundRoutes(),
 			'systemRecordings' => $this->loadSystemRecordingsForEditor(),
 			'alertCallLanguageSupport' => $this->alertCallLanguageSupportStatus(),
@@ -615,6 +641,44 @@ class Repeatcaller implements \BMO {
 		return ['status' => true, 'rule' => $rule];
 	}
 
+	private function rcHandleTestRuleEmail(): array {
+		$ruleId = $this->positiveRequestId('rule_id');
+		if ($ruleId <= 0) {
+			return ['status' => false, 'message' => _('Missing rule ID.')];
+		}
+		$rule = $this->rcRepository()->loadRule($ruleId);
+		if (!is_array($rule)) {
+			return ['status' => false, 'message' => _('Rule not found or has been deleted.')];
+		}
+
+		$recipients = $this->normaliseRecipients((string)($rule['email_recipients'] ?? ''));
+		if (!$recipients) {
+			return ['status' => false, 'message' => _('No valid email recipients are configured for this rule.')];
+		}
+
+		$now = $this->now();
+		$sent = 0;
+		$failed = 0;
+		foreach ($recipients as $recipient) {
+			$subject = _('Repeat Caller: test email');
+			$message = 'Repeat Caller test email from ' . $this->getSystemIdentifier() . "\n\nTime: " . $now . "\nSource: manual test\n";
+			$result = $this->sendEmail($recipient, $subject, $message);
+			if ($result['status']) {
+				$sent++;
+			} else {
+				$failed++;
+			}
+		}
+
+		if ($sent === 0) {
+			return ['status' => false, 'message' => _('Test email failed for all recipients.')];
+		}
+		if ($failed > 0) {
+			return ['status' => true, 'message' => sprintf(_('Test email accepted by local mailer for %d recipient(s); %d failed. Delivery is not confirmed.'), $sent, $failed)];
+		}
+		return ['status' => true, 'message' => sprintf(_('Test email accepted by local mailer for %d recipient(s). Delivery is not confirmed.'), $sent)];
+	}
+
 	private function rcHandleSaveRule(): array {
 		$repository = $this->rcRepository();
 		$ruleId = $this->positiveRequestId('rule_id');
@@ -685,10 +749,21 @@ class Repeatcaller implements \BMO {
 		if (!in_array($payload['did_scope_mode'], ['all', 'selected'], true)) {
 			$payload['did_scope_mode'] = 'all';
 		}
+		$hasIncludedDid = false;
+		foreach ($payload['dids'] as $did) {
+			if ((string)($did['list_type'] ?? '') === 'include') {
+				$hasIncludedDid = true;
+				break;
+			}
+		}
+		if ($hasIncludedDid) {
+			$payload['dids'] = array_values(array_filter($payload['dids'], function (array $did): bool {
+				return (string)($did['list_type'] ?? '') === 'include';
+			}));
+		}
 		if (!empty($payload['alert_call_handle_callerid_upstream'])) {
 			$payload['alert_call_callerid'] = '';
 		}
-		$payload['dids'] = $this->rcFilterDidsForScopeMode($payload['dids'], $payload['did_scope_mode']);
 		if (!empty($payload['email_enabled'])) {
 			$rawRecipients = trim((string)($_REQUEST['email_recipients'] ?? ''));
 			$recipients = $this->normaliseRecipients($rawRecipients);
@@ -730,28 +805,11 @@ class Repeatcaller implements \BMO {
 				return ['status' => false, 'message' => _('Specific caller mode requires at least one included caller.')];
 			}
 		}
-		if ($payload['did_scope_mode'] === 'selected') {
-			$hasIncludedRoute = false;
-			foreach ($payload['dids'] as $did) {
-				if ((string)$did['list_type'] === 'include') {
-					$hasIncludedRoute = true;
-					break;
-				}
-			}
-			if (!$hasIncludedRoute) {
-				return ['status' => false, 'message' => _('Selected DID scope requires at least one included inbound route.')];
-			}
-		}
-
 		$targetEnabled = !empty($payload['enabled']) ? 1 : 0;
 		$shouldAttemptEnable = $targetEnabled === 1 && ($ruleId <= 0 || (int)($existingRule['enabled'] ?? 0) !== 1);
 		if ($shouldAttemptEnable && !$this->rcIsValidDefaultCountryCode((string)($this->rcSettings()['default_country_code'] ?? ''))) {
 			return ['status' => false, 'message' => _('Repeat Caller cannot be enabled until Global Settings > Default Country Code contains a valid value.')];
 		}
-		if ($shouldAttemptEnable && !empty($rule['alert_call_enabled']) && !$this->canEnableAlertCall()) {
-			return $this->alertCallFallbackError();
-		}
-
 		$ruleId = $repository->saveRule($payload, $this->now());
 		return [
 			'status' => true,
@@ -799,17 +857,33 @@ class Repeatcaller implements \BMO {
 	private function rcHandleGetIncidents(): array {
 		$view = strtolower(trim((string)($_REQUEST['view'] ?? 'active')));
 		if (!in_array($view, ['active', 'recent', 'accepted'], true)) {
-			$view = 'active';
+			return ['status' => false, 'message' => _('Invalid incident table view.')];
 		}
-		if ($view === 'recent') {
-			$view = 'accepted';
+		$table = $view === 'active' ? 'active_incidents' : 'recent_incidents';
+		$repositoryView = $view === 'active' ? 'active' : 'accepted';
+		$offset = $this->requestTableOffset();
+		$sortKey = $this->requestTableSortKey($table);
+		$sortDirection = $this->requestTableSortDirection($table);
+		if ($offset === null || $sortKey === null || $sortDirection === null) {
+			return ['status' => false, 'message' => _('Invalid table pagination or sorting request.')];
 		}
-		return ['status' => true, 'incidents' => $this->rcRepository()->loadIncidents($view, 300)];
+		$page = $this->rcRepository()->loadIncidentsPage($repositoryView, $offset, $sortKey, $sortDirection);
+		return ['status' => true, 'incidents' => $page['rows'], 'total' => $page['total'], 'offset' => $page['offset'], 'limit' => $page['limit']];
 	}
 
 	private function rcHandleGetSuppressedIncidents(): array {
+		if (isset($_REQUEST['cursor_id']) || isset($_REQUEST['cursor_time']) || isset($_REQUEST['cursor_as_of']) || isset($_REQUEST['cursor_token'])) {
+			return ['status' => false, 'message' => _('Invalid table pagination request.')];
+		}
+		$offset = $this->requestTableOffset();
+		$sortKey = $this->requestTableSortKey('suppressed_incidents');
+		$sortDirection = $this->requestTableSortDirection('suppressed_incidents');
+		if ($offset === null || $sortKey === null || $sortDirection === null) {
+			return ['status' => false, 'message' => _('Invalid table pagination or sorting request.')];
+		}
 		$asOf = $this->now();
-		return ['status' => true, 'suppressedIncidents' => $this->rcRepository()->loadActiveSuppressedIncidents($asOf, 300)];
+		$page = $this->rcRepository()->loadActiveSuppressedIncidentsPage($asOf, $offset, $sortKey, $sortDirection);
+		return ['status' => true, 'suppressedIncidents' => $page['rows'], 'total' => $page['total'], 'offset' => $page['offset'], 'limit' => $page['limit']];
 	}
 
 	private function rcHandleClearSuppression(): array {
@@ -827,7 +901,6 @@ class Repeatcaller implements \BMO {
 			'urgency' => 'low',
 			'status' => true,
 			'message' => _('Suppression cleared.'),
-			'suppressedIncidents' => $this->rcRepository()->loadActiveSuppressedIncidents($clearedAt, 300),
 			'engineStatus' => $this->rcEngineStatus($this->rcSettings()),
 		];
 	}
@@ -854,13 +927,32 @@ class Repeatcaller implements \BMO {
 		return [
 			'status' => true,
 			'message' => _('Incident accepted.'),
-			'activeIncidents' => $repository->loadIncidents('active', 200),
-			'recentIncidents' => $repository->loadIncidents('accepted', 300),
 		];
 	}
 
 	private function rcHandleGetAlertHistory(): array {
-		return ['status' => true, 'alertHistory' => $this->rcRepository()->loadIncidentAlertHistory(300)];
+		$offset = $this->requestTableOffset();
+		$sortKey = $this->requestTableSortKey('alert_history');
+		$sortDirection = $this->requestTableSortDirection('alert_history');
+		if ($offset === null || $sortKey === null || $sortDirection === null) {
+			return ['status' => false, 'message' => _('Invalid table pagination or sorting request.')];
+		}
+		$page = $this->rcRepository()->loadIncidentAlertHistoryPage($offset, $sortKey, $sortDirection);
+		return ['status' => true, 'alertHistory' => $page['rows'], 'total' => $page['total'], 'offset' => $page['offset'], 'limit' => $page['limit']];
+	}
+
+	private function rcHandleSaveUiSetting(): array {
+		$table = isset($_REQUEST['table']) && is_string($_REQUEST['table']) ? $_REQUEST['table'] : '';
+		$sortKey = isset($_REQUEST['sort_key']) && is_string($_REQUEST['sort_key']) ? $_REQUEST['sort_key'] : '';
+		$sortDirection = isset($_REQUEST['sort_direction']) && is_string($_REQUEST['sort_direction']) ? strtolower($_REQUEST['sort_direction']) : '';
+		$sortKeys = $this->tableSortKeys();
+		if (!isset($sortKeys[$table]) || !in_array($sortKey, $sortKeys[$table], true) || !in_array($sortDirection, ['asc', 'desc'], true)) {
+			return ['status' => false, 'message' => _('Invalid table sorting preference.')];
+		}
+		[$sortSetting, $directionSetting] = $this->tableSettingKeys($table);
+		$this->setSetting($sortSetting, $sortKey);
+		$this->setSetting($directionSetting, $sortDirection);
+		return ['status' => true, 'sortKey' => $sortKey, 'sortDirection' => $sortDirection];
 	}
 
 	private function rcHandleGetUiChangeToken(): array {
@@ -916,9 +1008,6 @@ class Repeatcaller implements \BMO {
 			'status' => true,
 			'message' => _('Pruning completed.'),
 			'deleted' => $deleted,
-			'alertHistory' => $repository->loadIncidentAlertHistory(300),
-			'suppressedIncidents' => $repository->loadSuppressedIncidentHistory(300),
-			'recentIncidents' => $repository->loadIncidents('accepted', 300),
 		];
 	}
 
@@ -930,7 +1019,6 @@ class Repeatcaller implements \BMO {
 			'status' => true,
 			'message' => _('Alert history cleared.'),
 			'deleted_count' => $deletedCount,
-			'alertHistory' => $repository->loadIncidentAlertHistory(300),
 		];
 	}
 
@@ -1024,6 +1112,13 @@ class Repeatcaller implements \BMO {
 		$settings['alert_history_prune_policy'] = $this->normalisePrunePolicy((string)$settings['alert_history_prune_policy']);
 		$settings['suppression_history_prune_policy'] = $this->normalisePrunePolicy((string)$settings['suppression_history_prune_policy']);
 		$settings['enabled'] = (string)$settings['enabled'] === '1' ? '1' : '0';
+		foreach ($this->tableSortKeys() as $table => $allowedKeys) {
+			[$sortSetting, $directionSetting] = $this->tableSettingKeys($table);
+			if (!in_array($settings[$sortSetting], $allowedKeys, true)) {
+				$settings[$sortSetting] = $this->settingsDefaults[$sortSetting];
+			}
+			$settings[$directionSetting] = strtolower((string)$settings[$directionSetting]) === 'asc' ? 'asc' : 'desc';
+		}
 
 		return $settings;
 	}
@@ -1159,24 +1254,6 @@ class Repeatcaller implements \BMO {
 		return $normalized;
 	}
 
-	private function rcFilterDidsForScopeMode(array $dids, string $didScopeMode): array {
-		$mode = $didScopeMode === 'selected' ? 'selected' : 'all';
-		$allowedListType = $mode === 'selected' ? 'include' : 'exclude';
-		$normalized = [];
-		foreach ($dids as $did) {
-			if (!is_array($did)) {
-				continue;
-			}
-			$listType = (string)($did['list_type'] ?? '');
-			if ($listType !== $allowedListType) {
-				continue;
-			}
-			$normalized[] = $did;
-		}
-
-		return $normalized;
-	}
-
 	private function rcDecodePayloadList($raw): array {
 		if (is_array($raw)) {
 			return $raw;
@@ -1302,11 +1379,12 @@ class Repeatcaller implements \BMO {
 			if (!class_exists('\CI_Email')) {
 				return ['status' => false, 'message' => 'CI_Email is not available.'];
 			}
-			$from = $this->getNotificationFromAddress();
+			$sender = $this->getNotificationSenderIdentity();
+			$from = $sender['address'];
 			if ($from === '') {
 				return ['status' => false, 'message' => 'Email "From:" Address is not configured in Advanced Settings.'];
 			}
-			$senderName = $this->getNotificationSenderName();
+			$senderName = $sender['name'];
 			$email = new \CI_Email();
 			if ($this->emailFromSupportsReturnPath($email)) {
 				$email->from($from, $senderName, $from);
@@ -1590,22 +1668,54 @@ class Repeatcaller implements \BMO {
 		return ['status' => false, 'message' => 'Originate failed.'];
 	}
 
-	private function getNotificationFromAddress(): string {
+	private function getSystemIdentifier(): string {
 		try {
-			$value = (string)\FreePBX::Config()->get('AMPUSERMANEMAILFROM');
-			return $this->normaliseEmailAddress($value);
+			$value = trim((string)\FreePBX::Config()->get('FREEPBX_SYSTEM_IDENT'));
+			if ($value !== '') {
+				return preg_replace('/\s+/', ' ', $value) ?? $value;
+			}
 		} catch (\Throwable $e) {
-			return '';
 		}
+
+		return 'unknown system';
 	}
 
-	private function getNotificationSenderName(): string {
+	private function getNotificationSenderIdentity(): array {
+		try {
+			$value = (string)\FreePBX::Config()->get('AMPUSERMANEMAILFROM');
+		} catch (\Throwable $e) {
+			$value = '';
+		}
 		try {
 			$brand = (string)\FreePBX::Config()->get('DASHBOARD_FREEPBX_BRAND');
-			return $brand !== '' ? $brand : 'Repeat Caller';
 		} catch (\Throwable $e) {
-			return 'Repeat Caller';
+			$brand = '';
 		}
+		$brand = strpbrk($brand, "\r\n") === false ? trim($brand) : '';
+		return $this->normaliseNotificationSenderIdentity($value, $brand !== '' ? $brand : 'Repeat Caller');
+	}
+
+	private function normaliseNotificationSenderIdentity(string $value, string $fallbackName): array {
+		$invalid = ['address' => '', 'name' => $fallbackName];
+		$value = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		// Check before trimming so surrounding header delimiters cannot disappear.
+		if (preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $value)) {
+			return $invalid;
+		}
+		$value = trim($value);
+		$name = $fallbackName;
+		if (strpos($value, '<') !== false || strpos($value, '>') !== false) {
+			if (!preg_match('/^([^<>]*)<([^<>]+)>$/u', $value, $matches)) {
+				return $invalid;
+			}
+			$explicitName = trim($matches[1]);
+			$name = $explicitName !== '' ? $explicitName : $fallbackName;
+			$value = trim($matches[2]);
+		}
+		if (!filter_var($value, FILTER_VALIDATE_EMAIL)) {
+			return $invalid;
+		}
+		return ['address' => $value, 'name' => $name];
 	}
 
 	private function emailFromSupportsReturnPath($email): bool {
@@ -1731,6 +1841,74 @@ class Repeatcaller implements \BMO {
 	private function positiveRequestId(string $key): int {
 		$value = isset($_REQUEST[$key]) ? (string)$_REQUEST[$key] : '';
 		return ctype_digit($value) && (int)$value > 0 ? (int)$value : 0;
+	}
+
+	private function requestTableOffset(): ?int {
+		if (!array_key_exists('offset', $_REQUEST)) {
+			return 0;
+		}
+		$value = $_REQUEST['offset'];
+		if (is_int($value)) {
+			return $value >= 0 ? $value : null;
+		}
+		if (!is_string($value) || !preg_match('/^(0|[1-9][0-9]*)$/D', $value)) {
+			return null;
+		}
+		$maximum = (string)PHP_INT_MAX;
+		if (strlen($value) > strlen($maximum) || (strlen($value) === strlen($maximum) && strcmp($value, $maximum) > 0)) {
+			return null;
+		}
+		return (int)$value;
+	}
+
+	private function requestTableSortKey(string $table): ?string {
+		$sortKeys = $this->tableSortKeys();
+		if (!isset($sortKeys[$table])) {
+			return null;
+		}
+		[$sortSetting] = $this->tableSettingKeys($table);
+		if (!array_key_exists('sort_key', $_REQUEST)) {
+			return (string)$this->rcSettings()[$sortSetting];
+		}
+		$value = $_REQUEST['sort_key'];
+		return is_string($value) && in_array($value, $sortKeys[$table], true) ? $value : null;
+	}
+
+	private function requestTableSortDirection(string $table): ?string {
+		if (!isset($this->tableSortKeys()[$table])) {
+			return null;
+		}
+		[, $directionSetting] = $this->tableSettingKeys($table);
+		if (!array_key_exists('sort_direction', $_REQUEST)) {
+			return (string)$this->rcSettings()[$directionSetting];
+		}
+		$value = $_REQUEST['sort_direction'];
+		if (!is_string($value) || !in_array(strtolower($value), ['asc', 'desc'], true)) {
+			return null;
+		}
+		return strtolower($value);
+	}
+
+	private function tableSortKeys(): array {
+		return [
+			'active_incidents' => ['id', 'first', 'rule', 'mode', 'subject', 'caller', 'last', 'count', 'threshold', 'window', 'status', 'updated'],
+			'recent_incidents' => ['id', 'created', 'rule', 'mode', 'subject', 'status', 'accepted_by', 'suppression_expires', 'updated'],
+			'suppressed_incidents' => ['time', 'rule', 'mode', 'subject', 'count', 'threshold_window', 'suppressed_until', 'cleared', 'reason', 'related_incident'],
+			'alert_history' => ['id', 'time', 'rule', 'mode', 'subject', 'event', 'action', 'status', 'stage', 'success', 'failure_detail'],
+		];
+	}
+
+	private function tableSettingKeys(string $table): array {
+		$prefixes = [
+			'active_incidents' => 'ui_active_incidents',
+			'recent_incidents' => 'ui_recent_incidents',
+			'suppressed_incidents' => 'ui_suppressed_incidents',
+			'alert_history' => 'ui_alert_history',
+		];
+		if (!isset($prefixes[$table])) {
+			throw new \InvalidArgumentException('Unknown incident table preference.');
+		}
+		return [$prefixes[$table] . '_sort_key', $prefixes[$table] . '_sort_dir'];
 	}
 
 	private function acquireReconcileLock(): bool {

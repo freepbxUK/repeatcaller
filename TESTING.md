@@ -5,10 +5,12 @@ with MySQL/MariaDB.
 
 ## Fresh Install
 
-1. Install the module with:
+1. Stage the signed release files in
+   `/var/www/html/admin/modules/repeatcaller/`. Then install the staged module
+   from a neutral directory:
 
 ```bash
-cd /var/www/html/admin/modules/repeatcaller
+cd ~
 fwconsole ma install repeatcaller
 fwconsole chown
 fwconsole reload
@@ -49,6 +51,25 @@ Expected v1 fresh-install tables include:
 8. Confirm rule-level mode, alert actions, schedules, and recipients persist after save/reload.
 9. In the Rules table, confirm each row shows Edit, Status, and X controls on one line. Press Status and confirm the explainer bar turns light grey, shows rule status text for 15 seconds, then reverts.
 
+## Incident and History Pagination
+
+- Confirm Active Incidents, Recent Incidents, Suppressed Incidents, and Alert
+	History each show a Previous / range / Next control above the table.
+- With more than 25 eligible rows, confirm each table replaces its rows when
+	moving between pages and reports the full matching total, including an
+	incomplete final page. Empty tables should retain their existing empty-state
+	message.
+- Sort each data column in both directions. Confirm sorting affects records
+	across pages, the selected heading shows its direction, and each table's
+	preference survives navigation, a full browser refresh, and returning to the
+	module.
+- Change data while a table is on a later page and confirm automatic refresh
+	retains the selected sort and page when valid, or moves to the final valid
+	page if rows were removed.
+- Confirm Accept and Clear Suppression continue to work after sorting and
+	pagination. Confirm Rules and Schedule retain their existing row-batching
+	behaviour.
+
 ## Runtime
 
 10. Trigger matching inbound calls and confirm incident creation.
@@ -76,7 +97,7 @@ Expected v1 fresh-install tables include:
 
 ## Alert Call contract coverage
 
-23. Run the focused documentation and behavior contracts:
+23. Run the focused documentation and behaviour contracts:
 
 ```bash
 cd /workspaces/repeatcaller
@@ -167,7 +188,7 @@ Multilingual Alert Call checks:
 - Confirm installed Spanish or German files show `Rejected → Fallback` and no
 	developer language override is exposed to admins.
 - Confirm active supported and unsupported languages show their native or exact
-	English fallback behavior, installed unsupported languages remain visible,
+	English fallback behaviour, installed unsupported languages remain visible,
 	no rule language selector exists, and generated language follows the active
 	FreePBX language.
 - Remove one required English prompt and confirm Alert Call activation is
@@ -179,7 +200,7 @@ Multilingual Alert Call checks:
 	Confirm `en`, `en_GB`, `en_AU`, and `en_NZ` are selected only when that exact
 	directory exists and contains the complete required English prompt inventory.
 - Confirm `en`, `en_GB`, `en_AU`, and `en_NZ` retain the established English
-	playback, retry, acceptance, decline, timeout, and accepted-elsewhere behavior.
+	playback, retry, acceptance, decline, timeout, and accepted-elsewhere behaviour.
 
 Timeout and stage-timing checks:
 
@@ -192,16 +213,28 @@ Timeout and stage-timing checks:
 
 ## Upgrade and Preservation
 
-39. Run the supported update sequence:
+39. On a FreePBX test system, update an installation from the official
+repository's existing Git checkout. Do not run Git commands against an
+installation that is not a Git checkout. Check for local changes and back
+them up before the hard reset; it discards local modifications and commits
+that are not on `origin/main`:
 
 ```bash
+git config --global --get-all safe.directory | grep -Fxq '/var/www/html/admin/modules/repeatcaller' \
+	|| git config --global --add safe.directory /var/www/html/admin/modules/repeatcaller
 cd /var/www/html/admin/modules/repeatcaller
-git fetch origin main
-git reset --hard FETCH_HEAD
+git status --short --branch
+git fetch origin
+git reset --hard origin/main
+cd ~
 fwconsole ma install repeatcaller
 fwconsole chown
 fwconsole reload
+fwconsole ma list | grep -i repeatcaller
+grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 ```
+Confirm both version checks report the expected version before testing
+signature state.
 40. Confirm rules, incidents, and history remain intact.
 41. Review uninstall warning and cleanup expectations before removal.
 
@@ -215,7 +248,7 @@ fwconsole reload
 47. Tick it again and save.
 48. Reopen the rule and confirm the field is blank and the previous value has been forgotten.
 
-## Final 1.0.2 Regression Checks
+## Final 1.1.0 Regression Checks
 
 49. In the rule editor, add an Alert Call destination using Add, then repeat using Enter; confirm both methods behave the same.
 50. Confirm Alert Call destination changes keep the associated Ignore these callers entry consistent without creating duplicate destinations.
@@ -224,6 +257,30 @@ fwconsole reload
 53. Add an Alert Call destination and confirm the self-trigger warning remains visible for approximately six seconds before disappearing.
 54. With Alert Call enabled and Caller ID managed elsewhere disabled, set or change an Alert Call Caller ID and save; confirm the Caller ID is added to Ignore these callers as an external return-path safeguard when the safeguard is triggered, without creating duplicate entries.
 55. Remove a Caller ID-generated Ignore these callers entry, change an unrelated rule setting, save, and confirm the Ignore entry is not silently recreated.
+
+56. Set Email From Address to `asterisk@demodomain.name`; confirm From and Reply-To use the dashboard brand and Return-Path uses that address. Repeat with an empty brand and confirm `Repeat Caller` is used.
+57. Set it to `JaCoTec TK-System <pbx@mydomain.de>`; confirm From and Reply-To preserve the explicit name and Return-Path uses the extracted address.
+58. Test the FreePBX 17 value `PBX-123 &lt;asterisk@demodomain.name&gt;`; confirm the decoded identity is used.
+59. Test malformed brackets, invalid addresses, and raw or HTML-encoded CR/LF injection; confirm sending fails with the existing missing From address message.
+60. Confirm comma, semicolon, and whitespace-separated recipients, deduplication, and invalid-recipient filtering behave as before.
+61. Confirm Alert History still renders an `accepted` Alert Call status as `Incident accepted` after the redundant JavaScript condition was simplified.
+62. Inspect module metadata and confirm the dependency minimum is FreePBX 16.0 while supported versions list FreePBX 16.0 and 17.0 separately.
+63. Open the rule editor and confirm DID Scope offers `Include All DIDs` (`all`) and `Select DIDs` (`selected`). Include All DIDs must grey out the full route editor without clearing valid saved selections and must match every route. Select DIDs must show `All DIDs` and `No DIDs` for empty lists. With no real rows, either action must be available. Once Included Routes or Excluded Routes contains a real route, the opposite action must remain disabled until the final route is removed. A route in either list must disappear from the selector and return when removed. Confirm synthetic defaults are never saved and the resulting configuration survives scope changes and save/reload. On upgrade, confirm legacy All-DIDs rules with exclusions become Select DIDs while preserving those exclusions and effective matching.
+64. Open an existing saved rule whose saved Email Recipients contain at least one valid address and confirm Test Email becomes available.
+65. Click Test Email and confirm the message is sent to the rule's saved recipients, not to any unsaved value in the field.
+66. Inspect the received message headers and confirm From and Reply-To use the same resolved identity as production alert email.
+67. Confirm the body begins `Repeat Caller test email from <system identifier>` using the configured FreePBX System Identifier, and includes the current time and `Source: manual test`.
+68. Confirm the success message states the local mailer accepted the message and does not claim external delivery.
+69. Edit the Email Recipients field without saving and confirm Test Email becomes unavailable.
+70. Reload the saved rule, then separately add and remove a DID route, add and remove a schedule row, and add, remove, and drag/drop reorder an Alert Call destination; confirm each change makes Test Email unavailable.
+71. Save the rule, reopen it, and confirm Test Email becomes available again when valid saved recipients exist.
+72. Open a rule with no valid saved recipients and confirm Test Email cannot be used.
+
+Run the focused sender contract before the existing PHP contracts:
+
+```bash
+php tests/repeat_email_from_contract.php
+```
 
 ## Useful Checks
 

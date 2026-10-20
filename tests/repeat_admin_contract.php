@@ -363,6 +363,116 @@ assert_same('01234567890, 07876543210', implode(', ', array_map(function (array 
 assert_same('01234567890, 02079460000', implode(', ', array_map(function (array $row): string {
 	return (string)($row['raw_value'] ?? '');
 }, $browserCallerReloadedRule['caller_lists']['exclude'] ?? [])), 'exclude callers should remain in canonical comma-space presentation order after reload');
+
+foreach ([['blocked', 'Blocked'], ['included', 'Included'], ['shared', 'Shared']] as $controllerRoute) {
+	$browserCallerSaveDb->prepare('INSERT INTO incoming (extension, cidnum, description) VALUES (?, ?, ?)')->execute([
+		$controllerRoute[0], '', $controllerRoute[1],
+	]);
+}
+$didSaveCases = [
+	['name' => 'Selected Empty Routes', 'dids' => [], 'include' => 0, 'exclude' => 0],
+	['name' => 'Selected Exclusions Only', 'dids' => [
+		['list_type' => 'exclude', 'route_key' => 'blocked|', 'route_label' => 'Blocked', 'did_value' => 'blocked', 'cid_value' => ''],
+	], 'include' => 0, 'exclude' => 1],
+	['name' => 'Selected Includes Only', 'dids' => [
+		['list_type' => 'include', 'route_key' => 'included|', 'route_label' => 'Included', 'did_value' => 'included', 'cid_value' => ''],
+	], 'include' => 1, 'exclude' => 0],
+	['name' => 'Selected Includes And Exclusions', 'dids' => [
+		['list_type' => 'include', 'route_key' => 'shared|', 'route_label' => 'Shared Include', 'did_value' => 'shared', 'cid_value' => ''],
+		['list_type' => 'exclude', 'route_key' => 'shared|', 'route_label' => 'Shared Exclude', 'did_value' => 'shared', 'cid_value' => ''],
+	], 'include' => 1, 'exclude' => 0],
+];
+foreach ($didSaveCases as $didSaveCase) {
+	$_REQUEST = [
+		'rule_id' => '0', 'name' => $didSaveCase['name'], 'enabled' => '0',
+		'email_enabled' => '0', 'alert_call_enabled' => '0', 'alert_call_destinations' => '',
+		'alert_call_strategy' => 'ringall', 'alert_call_recording_id' => '', 'mode' => 'repeat',
+		'threshold_count' => '2', 'observation_window_minutes' => '60', 'caller_mode' => 'any',
+		'exclude_withheld' => '0', 'did_scope_mode' => 'selected', 'alert_reminder_mode_override' => 'never',
+		'email_recipients' => '', 'suppression_minutes_override' => '', 'schedules' => '[]',
+		'callers' => '[]', 'dids' => json_encode($didSaveCase['dids']),
+	];
+	$didSaveResponse = $browserCallerSaveMethod->invoke($browserCallerSaveController);
+	assert_true(($didSaveResponse['status'] ?? false) === true, $didSaveCase['name'] . ' should save through the controller');
+	$didSavedRule = $browserCallerSaveRepo->loadRule((int)($didSaveResponse['rule']['id'] ?? 0));
+	assert_same('selected', (string)($didSavedRule['did_scope_mode'] ?? ''), $didSaveCase['name'] . ' should remain selected after reload');
+	assert_same($didSaveCase['include'], count($didSavedRule['did_lists']['include'] ?? []), $didSaveCase['name'] . ' should preserve real includes');
+	assert_same($didSaveCase['exclude'], count($didSavedRule['did_lists']['exclude'] ?? []), $didSaveCase['name'] . ' should preserve real exclusions');
+	foreach (array_merge($didSavedRule['did_lists']['include'] ?? [], $didSavedRule['did_lists']['exclude'] ?? []) as $didRow) {
+		assert_true(!in_array((string)($didRow['route_key'] ?? ''), ['All DIDs', 'No DIDs'], true), 'semantic defaults must never persist as route rows');
+	}
+}
+$_REQUEST = $savedRequest;
+
+$backupRule = static function (string $name, string $scope, array $includes, array $excludes): array {
+	return [
+		'name' => $name, 'enabled' => 0, 'email_enabled' => 0, 'email_recipients' => '',
+		'alert_call_enabled' => 0, 'alert_call_destinations' => '', 'alert_call_strategy' => 'ringall',
+		'alert_call_keep_trying' => 0, 'alert_call_recording_id' => null,
+		'alert_call_handle_callerid_upstream' => 1, 'alert_call_callerid' => '',
+		'mode' => 'repeat', 'threshold_count' => 2, 'observation_window_minutes' => 60,
+		'caller_mode' => 'any', 'exclude_withheld' => 0, 'did_scope_mode' => $scope,
+		'alert_reminder_mode_override' => 'never', 'suppression_minutes_override' => null,
+		'schedules' => [], 'caller_lists' => ['include' => [], 'exclude' => []],
+		'did_lists' => ['include' => $includes, 'exclude' => $excludes],
+	];
+};
+$routeRow = static function (string $type, string $key): array {
+	return ['list_type' => $type, 'route_key' => $key, 'route_label' => $key, 'did_value' => rtrim($key, '|'), 'cid_value' => ''];
+};
+
+$legacyRestoreDb = make_db();
+FreePBX::setDatabase($legacyRestoreDb);
+$legacyRestoreController = new \FreePBX\modules\Repeatcaller(new stdClass());
+$legacyRestoreController->restore(['settings' => [], 'rules' => [
+	$backupRule('Legacy All', 'all', [], []),
+	$backupRule('Legacy All Minus', 'all', [], [$routeRow('exclude', 'blocked|')]),
+	$backupRule('Legacy Selected', 'selected', [$routeRow('include', 'included|')], []),
+]]);
+$legacyRestoreRepo = new RepeatCallerRepository($legacyRestoreDb);
+$legacyRestored = [];
+foreach ($legacyRestoreRepo->loadRulesSummary() as $restoredSummary) {
+	$legacyRestored[(string)$restoredSummary['name']] = $legacyRestoreRepo->loadRule((int)$restoredSummary['id']);
+}
+assert_same('all', (string)$legacyRestored['Legacy All']['did_scope_mode'], 'legacy backup all without exclusions should restore as all');
+assert_same('selected', (string)$legacyRestored['Legacy All Minus']['did_scope_mode'], 'legacy backup all with exclusions should restore as selected');
+assert_same(0, count($legacyRestored['Legacy All Minus']['did_lists']['include']), 'legacy all-minus restore should keep includes empty');
+assert_same('blocked|', (string)$legacyRestored['Legacy All Minus']['did_lists']['exclude'][0]['route_key'], 'legacy all-minus restore should preserve exclusions');
+assert_same('selected', (string)$legacyRestored['Legacy Selected']['did_scope_mode'], 'legacy selected backup should remain selected');
+assert_same('included|', (string)$legacyRestored['Legacy Selected']['did_lists']['include'][0]['route_key'], 'legacy selected backup should preserve includes');
+
+$currentRestoreDb = make_db();
+FreePBX::setDatabase($currentRestoreDb);
+$currentRestoreController = new \FreePBX\modules\Repeatcaller(new stdClass());
+$currentRestoreController->restore(['settings' => [[
+	'setting_key' => 'did_scope_semantics_migrated_1_0_3', 'setting_value' => '1', 'updated_at' => '2026-09-21 00:00:00',
+]], 'rules' => [
+	$backupRule('Current Dormant All', 'all', [$routeRow('include', 'dormant-in|')], [$routeRow('exclude', 'dormant-out|')]),
+	$backupRule('Current Selected Both', 'selected', [$routeRow('include', 'shared|')], [$routeRow('exclude', 'shared|')]),
+	$backupRule('Current Selected Exclusions', 'selected', [], [$routeRow('exclude', 'blocked|')]),
+]]);
+$currentRestoreRepo = new RepeatCallerRepository($currentRestoreDb);
+$currentRestored = [];
+foreach ($currentRestoreRepo->loadRulesSummary() as $restoredSummary) {
+	$currentRestored[(string)$restoredSummary['name']] = $currentRestoreRepo->loadRule((int)$restoredSummary['id']);
+}
+assert_same('all', (string)$currentRestored['Current Dormant All']['did_scope_mode'], 'current marked backup should preserve all mode exactly');
+assert_same(1, count($currentRestored['Current Dormant All']['did_lists']['include']), 'current marked all backup should preserve dormant includes');
+assert_same(0, count($currentRestored['Current Dormant All']['did_lists']['exclude']), 'current marked backup with dormant includes should discard contradictory exclusions');
+assert_same('selected', (string)$currentRestored['Current Selected Both']['did_scope_mode'], 'current selected backup should remain selected');
+assert_same(1, count($currentRestored['Current Selected Both']['did_lists']['include']), 'current selected backup should preserve includes');
+assert_same(0, count($currentRestored['Current Selected Both']['did_lists']['exclude']), 'current selected backup with includes should discard contradictory exclusions');
+assert_same(0, count($currentRestored['Current Selected Exclusions']['did_lists']['include']), 'current exclusions-only backup should keep includes empty');
+assert_same(1, count($currentRestored['Current Selected Exclusions']['did_lists']['exclude']), 'current exclusions-only backup should preserve exclusions');
+$currentRestoreDb->prepare('INSERT INTO repeatcaller_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)')->execute([
+	'did_scope_semantics_migrated_1_0_3', '1', '2026-09-21 00:00:00',
+]);
+$currentBackup = $currentRestoreController->backup();
+$currentBackupSettingKeys = array_map(static function (array $row): string {
+	return (string)($row['setting_key'] ?? '');
+}, $currentBackup['settings'] ?? []);
+assert_true(in_array('did_scope_semantics_migrated_1_0_3', $currentBackupSettingKeys, true), 'backup should export the DID semantic generation marker');
+
 FreePBX::setDatabase($db);
 
 $mixedListRuleId = $parserRepo->saveRule([
@@ -498,7 +608,7 @@ assert_same(2, count($rule['schedules']), 'multiple schedules should persist');
 assert_same(1, count($rule['caller_lists']['include']), 'caller include list should persist');
 assert_same(1, count($rule['caller_lists']['exclude']), 'caller exclude list should persist');
 assert_same(1, count($rule['did_lists']['include']), 'did include list should persist');
-assert_same(0, count($rule['did_lists']['exclude']), 'selected DID mode should persist include rows only');
+assert_same(1, count($rule['did_lists']['exclude']), 'selected DID mode should preserve excluded route rows alongside included rows');
 assert_same(1, (int)$rule['email_enabled'], 'email flag should persist independently');
 assert_same(1, (int)$rule['alert_call_enabled'], 'alert call flag should persist independently');
 assert_same('100, 101', (string)$rule['alert_call_destinations'], 'alert call destinations should persist');
@@ -1356,6 +1466,28 @@ assert_same('0', (string)($bulkRuleAAfterSingleToggle['enabled'] ?? '0'), 'indiv
 // Focused contract: persisted snooze-selection state semantics.
 $controllerSource = file_get_contents(__DIR__ . '/../Repeatcaller.class.php');
 assert_true($controllerSource !== false, 'Repeatcaller controller source should be readable');
+$pageDataStart = strpos($controllerSource, 'private function rcBuildPageData(): array');
+$pageDataEnd = strpos($controllerSource, 'private function alertCallLanguageSupport()', $pageDataStart !== false ? $pageDataStart : 0);
+$pageDataSource = $pageDataStart !== false && $pageDataEnd !== false ? substr($controllerSource, $pageDataStart, $pageDataEnd - $pageDataStart) : '';
+assert_true(strpos($pageDataSource, 'loadIncidents(') === false && strpos($pageDataSource, 'loadIncidentAlertHistory(') === false, 'affected tables should not preload incident or alert-history datasets during page bootstrap');
+assert_true(strpos($controllerSource, 'loadIncidentsPage($repositoryView, $offset, $sortKey, $sortDirection)') !== false, 'incident AJAX handler should request offset pages using validated sorting preferences');
+assert_true(strpos($controllerSource, 'loadIncidentAlertHistoryPage($offset, $sortKey, $sortDirection)') !== false, 'alert-history AJAX handler should request offset pages using validated sorting preferences');
+assert_true(strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $offset, $sortKey, $sortDirection)') !== false, 'suppressed-incidents AJAX handler should derive eligibility time on the server and request an offset page');
+assert_true(strpos($controllerSource, 'const TABLE_PAGE_SIZE = 25;') !== false, 'backend page size should match the fixed 25-record interface');
+assert_true(strpos($controllerSource, 'private function requestTableOffset(): ?int') !== false && strpos($controllerSource, 'PHP_INT_MAX') !== false, 'AJAX controller should reject malformed and overflowing offsets');
+assert_true(strpos($controllerSource, 'private function requestTableCursor(): ?array') === false, 'retired continuation-cursor parsing should not remain in the controller');
+$getIncidentsStart = strpos($controllerSource, 'private function rcHandleGetIncidents(): array');
+$getIncidentsEnd = strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array', $getIncidentsStart !== false ? $getIncidentsStart : 0);
+$getIncidentsSource = $getIncidentsStart !== false && $getIncidentsEnd !== false ? substr($controllerSource, $getIncidentsStart, $getIncidentsEnd - $getIncidentsStart) : '';
+assert_true(strpos($getIncidentsSource, 'loadIncidents($view, 300)') === false, 'incident getter must not retain the former 300-row preload');
+$bootstrapViewSource = file_get_contents(__DIR__ . '/../views/main.php');
+assert_true(strpos($bootstrapViewSource, 'activeIncidents:') === false && strpos($bootstrapViewSource, 'recentIncidents:') === false && strpos($bootstrapViewSource, 'alertHistory:') === false && strpos($bootstrapViewSource, 'suppressedIncidents:') === false, 'paged tables should not duplicate large incident/history arrays in the HTML bootstrap');
+$saveMethodStart = strpos($controllerSource, 'private function rcHandleSaveRule(): array');
+$saveMethodEnd = strpos($controllerSource, 'private function rcHandleDeleteRule(): array', $saveMethodStart !== false ? $saveMethodStart : 0);
+$saveMethodSource = $saveMethodStart !== false && $saveMethodEnd !== false ? substr($controllerSource, $saveMethodStart, $saveMethodEnd - $saveMethodStart) : '';
+assert_true(strpos($saveMethodSource, 'Selected DID scope requires at least one included inbound route.') === false, 'controller save must allow Select DIDs with an empty include list');
+assert_true(strpos($saveMethodSource, '$rule[\'alert_call_enabled\']') === false, 'controller save must not reference an undefined rule variable during Alert Call validation');
+assert_true(strpos($controllerSource, "did_scope_semantics_migrated_1_0_3") !== false, 'restore must classify backup DID semantics using the exported migration marker');
 
 assert_true((bool)preg_match('/in_array\(\$seconds, \[300, 900, 1800, 3600, 10800, 21600, 43200, 86400\], true\)/', $controllerSource), 'snooze handler must accept existing durations and longer 3h/6h/12h/24h durations up to 86400 seconds');
 assert_true((bool)preg_match('/setSetting\(\'global_snooze_selected_seconds\', \(string\)\$seconds\);/', $controllerSource), 'setting a snooze duration must persist global_snooze_selected_seconds (e.g. "900" for 15m)');
@@ -1370,6 +1502,8 @@ $cssSource = file_get_contents(__DIR__ . '/../assets/css/repeatcaller.css');
 assert_true($cssSource !== false, 'repeatcaller.css source should be readable');
 $jsSource = file_get_contents(__DIR__ . '/../assets/js/repeatcaller.js');
 assert_true($jsSource !== false, 'repeatcaller.js source should be readable');
+assert_true(strpos($jsSource, "if (statusKey === 'accepted') {") !== false, 'Alert History should retain the accepted status summary condition');
+assert_true(strpos($jsSource, "statusKey === 'accepted' || " . "statusKey === 'accepted'") === false, 'Alert History accepted status condition must not contain a redundant duplicate branch');
 
 assert_true(strpos($jsSource, "syncLiveClockFromValue('pbx', $('#rc-pbx-time').text(), true);") !== false, 'page initialization must seed PBX clock from existing DOM text');
 assert_true(strpos($jsSource, "syncLiveClockFromValue('pbx', engine.pbx_time || '-', false);") !== false, 'renderEngine must resync PBX baseline from authoritative engine value');
@@ -1393,7 +1527,12 @@ assert_true(strpos($viewSource, '$initialRunNowEnabled = $initialMonitoringEnabl
 assert_true(strpos($viewSource, 'id="rc-run-now"<?php echo $initialRunNowEnabled ? \'\' : \' disabled\'; ?>') !== false, 'Run Now should include disabled attribute in markup when global state makes it unavailable');
 assert_true(strpos($viewSource, 'class="btn btn-warning" id="rc-run-now"') !== false, 'Run Now should use the existing amber/yellow warning button class');
 assert_true(strpos($viewSource, 'id="rc-enable"') === false && strpos($viewSource, 'id="rc-disable"') === false && strpos($viewSource, 'id="rc-resume"') === false, 'legacy separate Enable Rules, Disable Rules and Resume controls should be removed from Engine Status');
-assert_true(strpos($viewSource, 'id="rc-add-did-include"') !== false && strpos($viewSource, 'id="rc-add-did-exclude"') !== false, 'rule editor DID scope controls should keep Include Route and Exclude Route buttons visible');
+assert_true(strpos($viewSource, 'id="rc-add-did-include"') !== false && strpos($viewSource, 'id="rc-add-did-exclude"') !== false, 'rule editor DID scope controls should keep both route action buttons visible');
+assert_true(strpos($viewSource, '<option value="all"><?php echo _(\'Include All DIDs\'); ?></option>') !== false && strpos($viewSource, '<option value="selected"><?php echo _(\'Select DIDs\'); ?></option>') !== false, 'DID Scope should retain all and selected values with the final user-facing labels');
+assert_true(strpos($viewSource, 'Selected DIDs only') === false, 'legacy Selected DIDs only wording should not be rendered');
+assert_true((bool)preg_match('/id="rc-add-did-include" disabled/', $viewSource) && (bool)preg_match('/id="rc-add-did-exclude" disabled/', $viewSource), 'both route actions should be disabled in the initial server-rendered placeholder state');
+assert_true((bool)preg_match('/id="rc-add-did-include"[^>]*>\s*<\?php echo _\(\'Include Route\'\); \?>/', $viewSource), 'primary route action button should be labelled Include Route');
+assert_true(strpos($viewSource, "_('Confirm')") === false, 'Confirm should not be rendered as a route action label');
 assert_true(strpos($viewSource, 'Enable Monitoring') === false, 'legacy Enable Monitoring button label should be removed from the view');
 assert_true(strpos($viewSource, 'Disable Monitoring') === false, 'legacy Disable Monitoring button label should be removed from the view');
 assert_true(substr_count($viewSource, 'class="btn btn-primary rc-snooze"') === 8, 'Engine Status should render exactly eight Snooze buttons');
@@ -1494,24 +1633,22 @@ assert_true((bool)preg_match('/ajax\(\'saverule\',[\s\S]*function \(response\) \
 assert_true(strpos($jsSource, "$('#rc-add-rule')") === false, 'rules UI should not include or bind a separate Add Rule control');
 assert_true(strpos($jsSource, "$('#rc-reset-rule')") === false, 'legacy Clear Editor control should be removed from JS bindings');
 assert_true(strpos($jsSource, "$('#rc-rule-caller-mode').off('change.repeatcaller').on('change.repeatcaller', function () { updateCallerScopeEditorState(); });") !== false, 'Caller Scope selector should bind explicit change handling for caller field availability');
-assert_true(strpos($jsSource, 'function clearOppositeDidScopeRows(nextMode) {') !== false, 'DID scope mode switching should clear stale opposite-mode route rows in the editor state');
-assert_true(strpos($jsSource, 'function clearDidRouteActionState() {') !== false, 'DID scope switching should clear active route-action state');
-assert_true(strpos($jsSource, "didRouteActionMode = '';") !== false, 'DID route action mode should reset to inactive state');
-assert_true(strpos($jsSource, "$('#rc-route-pick').prop('disabled', true).addClass('rc-control-disabled').attr('aria-disabled', 'true');") !== false, 'route picker should start disabled and be reset disabled on scope changes');
-assert_true(strpos($jsSource, "$('#rc-rule-did-mode').off('change.repeatcaller').on('change.repeatcaller', function () {") !== false && strpos($jsSource, 'clearOppositeDidScopeRows(') !== false, 'DID scope selector change handler should clear opposite-mode selections before toggling controls');
-assert_true(strpos($jsSource, 'clearDidRouteActionState();') !== false, 'scope switching should clear active Include/Exclude action and disable route picker');
-assert_true(strpos($jsSource, "$('#rc-add-did-include')") !== false && strpos($jsSource, ".prop('disabled', !selectedMode)") !== false && strpos($jsSource, ".show();") !== false, 'Include Route button should remain visible and be disabled in All DIDs mode');
-assert_true(strpos($jsSource, "$('#rc-add-did-exclude')") !== false && strpos($jsSource, ".prop('disabled', selectedMode)") !== false && strpos($jsSource, ".show();") !== false, 'Exclude Route button should remain visible and be disabled in Selected DIDs mode');
-assert_true(strpos($jsSource, "$('#rc-did-include-col').toggle(selectedMode);") !== false && strpos($jsSource, "$('#rc-did-exclude-col').toggle(!selectedMode);") !== false, 'DID route lists should switch between include-only and exclude-only presentations by mode');
-assert_true(strpos($jsSource, 'function activateDidRouteAction(actionMode) {') !== false, 'valid DID action buttons should activate route picker mode');
-assert_true(strpos($jsSource, "if (actionMode === 'include' && $('#rc-add-did-include').prop('disabled')) {") !== false && strpos($jsSource, "if (actionMode === 'exclude' && $('#rc-add-did-exclude').prop('disabled')) {") !== false, 'disabled DID action button must not activate route picker mode');
-assert_true(strpos($jsSource, "$('#rc-add-did-include').addClass('rc-route-action-active');") !== false && strpos($jsSource, "$('#rc-add-did-exclude').addClass('rc-route-action-active');") !== false, 'pressing the valid DID action should highlight it as active');
-assert_true(strpos($jsSource, "$('#rc-route-pick').prop('disabled', false).removeClass('rc-control-disabled').attr('aria-disabled', 'false');") !== false, 'pressing the valid DID action should enable route picker for selection');
-assert_true(strpos($jsSource, "$('#rc-route-pick').off('change.repeatcaller').on('change.repeatcaller', function () {") !== false, 'route picker should add route entries via selection while action mode is active');
-assert_true(strpos($jsSource, "if (didRouteActionMode === 'include') {") !== false && strpos($jsSource, "addRouteToList($('#rc-did-include-list'), route, 'include');") !== false, 'include action mode should add routes to Included Routes list');
-assert_true(strpos($jsSource, "if (didRouteActionMode === 'exclude') {") !== false && strpos($jsSource, "addRouteToList($('#rc-did-exclude-list'), route, 'exclude');") !== false, 'exclude action mode should add routes to Excluded Routes list');
-assert_true(strpos($jsSource, "var didScopeMode = $('#rc-rule-did-mode').val() === 'selected' ? 'selected' : 'all';") !== false && strpos($jsSource, 'var dids = didScopeMode === \'selected\' ? didIncludes : didExcludes;') !== false, 'save payload should submit include rows only for Selected DIDs and exclude rows only for All DIDs');
-assert_true(strpos($jsSource, "if (didScopeMode === 'selected' && didIncludes.length < 1) {") !== false, 'Selected DIDs only mode should require at least one included route before save');
+assert_true(strpos($jsSource, 'function clearDidRouteActionState() {') !== false, 'route action state reset should clear the route selection and recalculate action availability');
+assert_true(strpos($jsSource, "var options = ['<option value=\"\" selected>Select an inbound route…</option>'];") !== false, 'inbound route selector should begin with a selected empty placeholder');
+assert_true(strpos($jsSource, "$('#rc-route-pick').html(options.join(''));") !== false, 'route inventory refresh should rebuild the selector from available routes');
+assert_true(strpos($jsSource, "$('#rc-route-pick').val('');") !== false, 'successful route actions and scope changes should reset the route placeholder');
+assert_true(strpos($jsSource, "$('#rc-rule-did-mode').off('change.repeatcaller').on('change.repeatcaller', function () {") !== false, 'DID scope selector should refresh route action state without discarding either route list');
+assert_true(strpos($jsSource, 'clearDidRouteActionState();') !== false, 'scope switching should reset route selection and action availability');
+assert_true(strpos($jsSource, 'function updateDidRouteActionButtonState() {') !== false, 'route actions should derive availability from the selected unused route and include-list state');
+assert_true(strpos($jsSource, "var routeKey = $.trim(String($('#rc-route-pick').val() || ''));") !== false, 'empty route selector values should be treated as no route selected');
+assert_true(strpos($jsSource, "$('#rc-did-include-col, #rc-did-exclude-col').show();") !== false, 'Included Routes and Excluded Routes should remain visible in every DID scope mode');
+assert_true(strpos($jsSource, 'function applyDidRouteAction(actionMode) {') !== false, 'route action handlers should validate and apply the currently selected route');
+assert_true(strpos($jsSource, "if (routeKey === '') {") !== false, 'route action path should reject the empty placeholder independently of button state');
+assert_true(strpos($jsSource, "? addRouteToList($('#rc-did-include-list'), route, 'include')") !== false, 'Include Route should add to the included-route list');
+assert_true(strpos($jsSource, ": addRouteToList($('#rc-did-exclude-list'), route, 'exclude');") !== false, 'Exclude Route should retain the existing exclude-route semantics');
+assert_true(strpos($jsSource, 'var dids = didIncludes.concat(didExcludes);') !== false, 'save payload should collect the valid route rows shown by the editor');
+assert_true(strpos($jsSource, "Selected DID scope requires at least one included inbound route.") === false, 'Select DIDs should allow an empty include list for all-routes-minus-exclusions semantics');
+assert_true(strpos($jsSource, "{selector: '#rc-did-include-list', label: 'All DIDs'}") !== false && strpos($jsSource, "{selector: '#rc-did-exclude-list', label: 'No DIDs'}") !== false, 'empty route lists should render their semantic visual defaults');
 assert_true(strpos($jsSource, "$('#rc-rule-did-mode').val(rule.did_scope_mode || 'all');") !== false && strpos($jsSource, 'updateDidScopeEditorState();') !== false, 'loading a rule should restore DID mode and route lists without auto-activating picker mode');
 assert_true(strpos($jsSource, 'function updateCallerScopeEditorState() {') !== false, 'Rule editor should use one dedicated helper to control Caller Scope field availability');
 assert_true(strpos($jsSource, "var requiresSpecificCallers = callerMode === 'specific_only';") !== false, 'Specific callers mode should explicitly drive caller input activation');
@@ -1569,7 +1706,7 @@ assert_true(strpos($jsSource, "alert_call: 'Alert Call'") !== false, 'Alert Hist
 assert_true(strpos($jsSource, "sent: 'Sent'") !== false, 'Alert History status label should humanize sent to Sent');
 assert_true(strpos($jsSource, "accepted: 'Accepted'") !== false && strpos($jsSource, "busy: 'Busy'") !== false, 'Alert History status labels should normalize accepted and busy consistently');
 assert_true(strpos($jsSource, "answered_no_response: 'Answered, No Response'") !== false, 'Alert History status mapping should render answered_no_response as Answered, No Response');
-assert_true((bool)preg_match('/function loadAlertHistory\(options\) \{[\s\S]*ajax\(\'getalerthistory\', \{\}, function \(response\) \{[\s\S]*renderAlertHistory\(response\.alertHistory \|\| \[\]\);[\s\S]*\}\);[\s\S]*\}/', $jsSource), 'live Alert History path should render rows through renderAlertHistory from getalerthistory AJAX response');
+assert_true((bool)preg_match('/function loadAlertHistory\(options\) \{[\s\S]*loadPagedTable\(\'\#rc-alert-history-table\', options\);/', $jsSource), 'live Alert History path should load through the shared offset-paged AJAX loader');
 assert_true(strpos($jsSource, 'function incidentSubjectDisplay(row) {') !== false, 'history tables should use one dedicated subject helper for invert-only presentation changes');
 assert_true(strpos($jsSource, "var threshold = parseInt(data.threshold_count || data.incident_threshold_count || 0, 10);") !== false && strpos($jsSource, "var windowMinutes = parseInt(data.observation_window_minutes || data.incident_observation_window_minutes || 0, 10);") !== false, 'invert subject display should read historical threshold and window snapshots from the incident row');
 assert_true(strpos($jsSource, "if (modeValue === 'invert') {") !== false, 'subject helper should only rewrite invert-mode rows');
@@ -1578,13 +1715,23 @@ assert_true(strpos($jsSource, "var subjectDisplay = incidentSubjectDisplay(i);")
 assert_true(strpos($jsSource, "var subjectDisplay = incidentSubjectDisplay(row);") !== false, 'suppressed incidents should use the subject helper');
 assert_true(strpos($jsSource, "var subjectDisplay = incidentSubjectDisplay(h);") !== false, 'alert history should use the subject helper');
 assert_true(strpos($jsSource, "return rawSubject !== '' ? rawSubject : '-';") !== false, 'non-invert incidents should keep the captured subject_label');
-assert_true(strpos($jsSource, 'var tableBatchSize = 15;') !== false, 'table batching should use a fixed initial and incremental batch size of 15 rows');
-assert_true(strpos($jsSource, "'#rc-rules-table'") !== false && strpos($jsSource, "'#rc-active-incidents-table'") !== false && strpos($jsSource, "'#rc-suppressed-incidents-table'") !== false && strpos($jsSource, "'#rc-recent-incidents-table'") !== false && strpos($jsSource, "'#rc-alert-history-table'") !== false && strpos($jsSource, "'#rc-schedule-table'") !== false, 'table batching should be configured for every Repeat Caller admin table');
+assert_true(strpos($jsSource, 'var tableBatchSize = 15;') !== false, 'unaffected Rules and Schedule batching should retain its existing 15-row behaviour');
+assert_true(strpos($jsSource, 'var tablePageSize = 25;') !== false, 'incident and history pagination should use a fixed 25-row page size');
+assert_true(strpos($jsSource, "'#rc-rules-table'") !== false && strpos($jsSource, "'#rc-schedule-table'") !== false, 'unaffected Rules and Schedule tables should retain their batching configuration');
 assert_true(strpos($jsSource, 'function tableBatchUnitSize(selector) {') !== false && strpos($jsSource, "return selector === '#rc-rules-table' ? 2 : 1;") !== false, 'rules table batching should keep primary rows and explainer rows together as one unit');
 assert_true(strpos($jsSource, 'function updateTableRowBatching(selector) {') !== false, 'table batching should be managed through one reusable updater helper');
 assert_true(strpos($jsSource, 'rc-table-show-more') !== false && strpos($jsSource, 'rc-table-show-less') !== false, 'table batching should render explicit Show more and Show less controls');
-assert_true(strpos($jsSource, 'state.visibleUnits += tableBatchSize;') !== false && strpos($jsSource, 'state.visibleUnits = tableBatchSize;') !== false, 'Show more and Show less handlers should reveal next batches and reset to the first batch');
-assert_true(strpos($jsSource, "updateTableRowBatching('#rc-rules-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-suppressed-incidents-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-alert-history-table');") !== false && strpos($jsSource, 'updateTableRowBatching(selector);') !== false, 'all table render paths should refresh batching visibility after rows are rebuilt');
+assert_true(strpos($jsSource, "'.rc-table-show-more').on('click.repeatcaller'") !== false && strpos($jsSource, "showMoreTableRows(selector);") !== false, 'Rules and Schedule Show More buttons should be bound to the working batch handler');
+assert_true(strpos($jsSource, "'.rc-table-show-less').on('click.repeatcaller'") !== false && strpos($jsSource, "showLessTableRows(selector);") !== false, 'Rules and Schedule Show Less buttons should be bound to the working batch handler');
+assert_true(strpos($jsSource, "if ($.inArray(selector, tableBatchSelectors) === -1)") !== false, 'legacy Show More and Show Less handlers should be limited to Rules and Schedule');
+assert_true(strpos($jsSource, 'function showMoreTableRows(selector) {') !== false && strpos($jsSource, 'function showLessTableRows(selector) {') !== false, 'only the Rules and Schedule row-batching handlers should remain');
+assert_true(strpos($jsSource, 'payload.offset = page.offset;') !== false && strpos($jsSource, 'payload.sort_key = page.sortKey;') !== false && strpos($jsSource, 'payload.sort_direction = page.sortDirection;') !== false, 'page requests should send the validated offset and independent sort state');
+assert_true(strpos($jsSource, 'page.total = Math.max(0, parseInt(response.total, 10) || 0);') !== false && strpos($jsSource, 'page.offset = parseInt(response.offset, 10) || 0;') !== false, 'client state should use the complete result count and effective server offset');
+assert_true(strpos($jsSource, "ajax('saveuisetting'") !== false && strpos($jsSource, 'state.offset = 0;') !== false, 'sorting should persist its preference and reset only that table to its first page');
+assert_true(strpos($jsSource, 'function updateHistoryPagination(selector) {') !== false && strpos($jsSource, "'Showing ' + first + ' to ' + last + ' of ' + state.total") !== false, 'each affected table should display its current range and complete total');
+assert_true(strpos($jsSource, 'function changeTablePage(selector, offset) {') !== false && strpos($jsSource, 'state.offset + state.limit') !== false, 'Previous and Next should fetch replacement pages without appending');
+assert_true(strpos($jsSource, 'function tablePaginationControls(selector) {') !== false && strpos($jsSource, 'class="btn btn-xs btn-default rc-page-previous"') !== false && strpos($jsSource, 'class="btn btn-xs btn-default rc-page-next"') !== false, 'affected tables should render independent Previous and Next controls');
+assert_true(strpos($jsSource, "updateTableRowBatching('#rc-rules-table');") !== false && strpos($jsSource, "updateTableRowBatching('#rc-schedule-table');") !== false && strpos($jsSource, 'updateTableRowBatching(selector);') !== false, 'unaffected Rules and Schedule render paths should retain batching updates');
 assert_true(strpos($jsSource, 'updateAllTableRowBatching();') !== false, 'initial page setup should apply table batching controls after the UI is bootstrapped');
 assert_true(strpos($jsSource, 'function normalizeCode(rawValue) {') !== false, 'alert-history formatter should normalize canonical codes in one helper');
 assert_true(strpos($jsSource, 'function mapCode(rawValue, labels) {') !== false, 'alert-history formatter should map canonical codes through one helper');
@@ -1699,6 +1846,8 @@ class Element {
 		this.id = id;
 		this.classes = new Set(classes.filter(Boolean));
 		this.attrs = {};
+		this.dataStore = {};
+		this.eventHandlers = {};
 		this.props = {};
 		this.children = [];
 		this.parent = null;
@@ -1754,6 +1903,19 @@ function descendantMatch(element, selector) {
 	if (!selector) {
 		return false;
 	}
+	if (selector === 'tbody tr') {
+		if (element.tag !== 'tr') {
+			return false;
+		}
+		let current = element.parent;
+		while (current) {
+			if (current.tag === 'tbody') {
+				return true;
+			}
+			current = current.parent;
+		}
+		return false;
+	}
 	if (selector === 'input, button') {
 		return element.tag === 'input' || element.tag === 'button';
 	}
@@ -1791,6 +1953,24 @@ function collectDescendants(element, selector) {
 	}
 	visit(element);
 	return found;
+}
+
+function appendTableRows(tbody, html) {
+	const rowPattern = /<tr([^>]*)>([\s\S]*?)<\/tr>/gi;
+	let match;
+	while ((match = rowPattern.exec(String(html || ''))) !== null) {
+		const classMatch = match[1].match(/class="([^"]*)"/i);
+	const row = new Element('tr', '', classMatch ? classMatch[1].split(/\s+/).filter(Boolean) : []);
+	const cellPattern = /<td([^>]*)>([\s\S]*?)<\/td>/gi;
+	let cellMatch;
+	while ((cellMatch = cellPattern.exec(match[2])) !== null) {
+		const cell = new Element('td');
+		cell.textContent = cellMatch[2].replace(/<[^>]*>/g, '');
+		row.append(cell);
+	}
+	register(row);
+	tbody.append(row);
+	}
 }
 
 function splitSelector(selector) {
@@ -1833,6 +2013,9 @@ class Wrap {
 	constructor(elements) {
 		this.els = (elements || []).filter(Boolean);
 		this.length = this.els.length;
+		this.els.forEach(function (element, index) {
+			this[index] = element;
+		}, this);
 	}
 	each(callback) {
 		this.els.forEach(function (element, index) {
@@ -1858,6 +2041,15 @@ class Wrap {
 		});
 		return this;
 	}
+	data(name, value) {
+		if (value === undefined) {
+			return this.els[0] ? this.els[0].dataStore[name] : undefined;
+		}
+		this.els.forEach(function (element) {
+			element.dataStore[name] = value;
+		});
+		return this;
+	}
 	val(value) {
 		if (value === undefined) {
 			return this.els[0] ? this.els[0].value : '';
@@ -1876,12 +2068,17 @@ class Wrap {
 		});
 		return this;
 	}
+	get(index) { return this.els[index]; }
 	html(value) {
 		if (value === undefined) {
 			return this.els[0] ? this.els[0].htmlContent : '';
 		}
 		this.els.forEach(function (element) {
 			element.htmlContent = value;
+			if (element.tag === 'tbody') {
+				element.children = [];
+				appendTableRows(element, value);
+			}
 		});
 		return this;
 	}
@@ -1891,6 +2088,9 @@ class Wrap {
 			classes.forEach(function (cls) { element.classes.add(cls); });
 		});
 		return this;
+	}
+	hasClass(value) {
+		return !!this.els[0] && this.els[0].classes.has(value);
 	}
 	removeClass(value) {
 		const classes = String(value || '').split(/\s+/).filter(Boolean);
@@ -1924,7 +2124,11 @@ class Wrap {
 		this.els.forEach(function (element) {
 			nodes.forEach(function (node) {
 				if (node) {
-					element.append(node);
+					if (typeof node === 'string' && element.tag === 'tbody' && node.indexOf('<tr') !== -1) {
+						appendTableRows(element, node);
+					} else {
+						element.append(node);
+					}
 				}
 			});
 		});
@@ -1937,6 +2141,7 @@ class Wrap {
 		});
 		return new Wrap(matches);
 	}
+	get(index) { return this.els[index]; }
 	is(selector) {
 		if (!this.els.length) {
 			return false;
@@ -1947,7 +2152,26 @@ class Wrap {
 		return descendantMatch(this.els[0], selector);
 	}
 	off() { return this; }
-	on() { return this; }
+	on(eventName, handler) {
+		this.els.forEach(function (element) {
+			element.eventHandlers[eventName] = handler;
+		});
+		return this;
+	}
+	trigger(eventName, eventArg) {
+		this.els.forEach(function (element) {
+			if (typeof element.eventHandlers[eventName] === 'function') {
+				element.eventHandlers[eventName].call(element, eventArg);
+			}
+		});
+		return this;
+	}
+	index() {
+		const element = this.els[0];
+		return element && element.parent ? element.parent.children.indexOf(element) : -1;
+	}
+	after(content) { return moveBesideSibling(this, content, 1); }
+	before(content) { return moveBesideSibling(this, content, 0); }
 	remove() {
 		this.els.forEach(function (element) {
 			if (element.parent) {
@@ -2001,6 +2225,23 @@ class Wrap {
 	}
 }
 
+function moveBesideSibling(targetWrap, content, offset) {
+	const target = targetWrap.els[0];
+	if (!target || !target.parent) {
+		return targetWrap;
+	}
+	const moving = content instanceof Wrap ? content.els : [content];
+	moving.forEach(function (node) {
+		if (node.parent) {
+			node.parent.removeChild(node);
+		}
+		const siblings = target.parent.children;
+		siblings.splice(siblings.indexOf(target) + offset, 0, node);
+		node.parent = target.parent;
+	});
+	return targetWrap;
+}
+
 function $(selector) {
 	if (typeof selector === 'function') {
 		return undefined;
@@ -2046,6 +2287,52 @@ $.each = function (collection, callback) {
 };
 
 $.isArray = Array.isArray;
+
+$.Deferred = function () {
+	let resolved = false;
+	let resolvedValue;
+	const thenHandlers = [];
+	const doneHandlers = [];
+	const promise = {
+		resolve: function (value) {
+			if (resolved) {
+				return promise;
+			}
+			resolved = true;
+			resolvedValue = value;
+			thenHandlers.forEach(function (handler) { handler(value); });
+			doneHandlers.forEach(function (handler) { handler(value); });
+			return promise;
+		},
+		promise: function () { return promise; },
+		then: function (handler) {
+			const next = $.Deferred();
+			const continueWithValue = function (value) {
+				const returned = handler(value);
+				if (returned && typeof returned.then === 'function') {
+					returned.then(function (nextValue) { next.resolve(nextValue); });
+				} else {
+					next.resolve(returned);
+				}
+			};
+			if (resolved) {
+				continueWithValue(resolvedValue);
+			} else {
+				thenHandlers.push(continueWithValue);
+			}
+			return next.promise();
+		},
+		done: function (handler) {
+			if (resolved) {
+				handler(resolvedValue);
+			} else {
+				doneHandlers.push(handler);
+			}
+			return promise;
+		}
+	};
+	return promise;
+};
 
 $.inArray = function (value, array) {
 	if (!Array.isArray(array)) {
@@ -2120,6 +2407,9 @@ createGeneric('rc-caller-exclude-help');
 createGeneric('rc-caller-include-unavailable');
 createGeneric('rc-caller-exclude-unavailable');
 createGeneric('rc-rule-did-mode', 'select');
+createGeneric('rc-did-route-actions-col');
+createGeneric('rc-did-include-col');
+createGeneric('rc-did-exclude-col');
 createGeneric('rc-did-include-list', 'ul', ['rc-list']);
 createGeneric('rc-did-exclude-list', 'ul', ['rc-list']);
 createGeneric('rc-route-pick', 'select');
@@ -2142,7 +2432,23 @@ createGeneric('rc-rule-alert-call-callerid-help');
 createGeneric('rc-setting-country', 'input');
 byId['rc-setting-country'].value = '44';
 createButton('rc-run-now', ['btn', 'btn-warning']);
+createButton('rc-rule-test-email', ['btn', 'btn-default']);
 createGeneric('rc-rules-table', 'table');
+const activeIncidentResponsive = createGeneric('rc-active-incidents-responsive', 'div', ['table-responsive']);
+const activeIncidentTable = createGeneric('rc-active-incidents-table', 'table');
+const activeIncidentThead = createGeneric('rc-active-incidents-thead', 'thead');
+const activeIncidentHeaderRow = makeElement('tr');
+activeIncidentThead.append(activeIncidentHeaderRow);
+activeIncidentHeaderRow.append(new Element('th'));
+const activeIncidentTbody = createGeneric('rc-active-incidents-tbody', 'tbody');
+activeIncidentResponsive.append(activeIncidentTable);
+activeIncidentTable.append(activeIncidentThead);
+activeIncidentTable.append(activeIncidentTbody);
+const alertHistoryResponsive = createGeneric('rc-alert-history-responsive', 'div', ['table-responsive']);
+const alertHistoryTable = createGeneric('rc-alert-history-table', 'table');
+const alertHistoryTbody = createGeneric('rc-alert-history-tbody', 'tbody');
+alertHistoryResponsive.append(alertHistoryTable);
+alertHistoryTable.append(alertHistoryTbody);
 const rulesTbody = createGeneric('rc-rules-table-body', 'tbody');
 byId['rc-rules-table'].append(rulesTbody);
 const editRow = new Element('tr');
@@ -2201,7 +2507,55 @@ const context = {
 vm.createContext(context);
 let source = fs.readFileSync('/workspaces/repeatcaller/assets/js/repeatcaller.js', 'utf8');
 source = source.replace('function ajax(command, payload, done, onComplete, options) {', 'function ajax(command, payload, done, onComplete, options) { var interceptor = (globalThis && globalThis.__testAjaxInterceptor) || (globalThis && globalThis.window && globalThis.window.__testAjaxInterceptor); if (interceptor && typeof interceptor === \'function\') { return interceptor(command, payload, done, onComplete, options); }');
-source = source.replace('})(jQuery);', '\nwindow.__hooks = { loadRule: loadRule, saveRule: saveRule, clearAlertCallCallerIdSessionState: clearAlertCallCallerIdSessionState, setEditingRuleRow: setEditingRuleRow, updateRuleRowActionState: updateRuleRowActionState, updateStartAsEditorState: updateStartAsEditorState, updateAlertCallAndEmailState: updateAlertCallAndEmailState, updateAlertCallCallerIdState: updateAlertCallCallerIdState, updateAlertCallDestinationAddButtonState: updateAlertCallDestinationAddButtonState, addAlertCallDestinationsFromInput: addAlertCallDestinationsFromInput, triggerAlertCallDestinationAdd: triggerAlertCallDestinationAdd, handleAlertCallDestinationInputKeydown: handleAlertCallDestinationInputKeydown, applyAlertCallCallerIdSelfTriggerSafeguard: applyAlertCallCallerIdSelfTriggerSafeguard, applyAlertCallCallerIdSelfTriggerSafeguardForSave: applyAlertCallCallerIdSelfTriggerSafeguardForSave, syncAlertCallCallerIdSafeguardState: syncAlertCallCallerIdSafeguardState, showAlertCallSelfTriggerWarning: showAlertCallSelfTriggerWarning, showMessage: showMessage, alertCallSelfTriggerWarningDurationSeconds: alertCallSelfTriggerWarningDurationSeconds, alertCallSelfTriggerWarningTimeoutMs: alertCallSelfTriggerWarningTimeoutMs, initializeRunNowAvailabilityFromBootstrap: initializeRunNowAvailabilityFromBootstrap, renderAlertCallDestinations: renderAlertCallDestinations, updateAlertCallDestinationHiddenField: updateAlertCallDestinationHiddenField, updateAlertCallStrategyEditorState: updateAlertCallStrategyEditorState };\n})(jQuery);');
+source = source.replace('function renderAlertHistory(items, append) {', 'function renderAlertHistory(items, append) { window.__alertCallFailureSummary = alertCallFailureSummary;');
+source = source.replace('})(jQuery);', `
+window.__hooks = {
+	loadRule: loadRule,
+	saveRule: saveRule,
+	collectRouteList: collectRouteList,
+	updateDidRouteListDefaults: updateDidRouteListDefaults,
+	clearAlertCallCallerIdSessionState: clearAlertCallCallerIdSessionState,
+	setEditingRuleRow: setEditingRuleRow,
+	updateRuleRowActionState: updateRuleRowActionState,
+	updateStartAsEditorState: updateStartAsEditorState,
+	updateAlertCallAndEmailState: updateAlertCallAndEmailState,
+	updateAlertCallCallerIdState: updateAlertCallCallerIdState,
+	updateAlertCallDestinationAddButtonState: updateAlertCallDestinationAddButtonState,
+	addAlertCallDestinationsFromInput: addAlertCallDestinationsFromInput,
+	triggerAlertCallDestinationAdd: triggerAlertCallDestinationAdd,
+	handleAlertCallDestinationInputKeydown: handleAlertCallDestinationInputKeydown,
+	applyAlertCallCallerIdSelfTriggerSafeguard: applyAlertCallCallerIdSelfTriggerSafeguard,
+	applyAlertCallCallerIdSelfTriggerSafeguardForSave: applyAlertCallCallerIdSelfTriggerSafeguardForSave,
+	syncAlertCallCallerIdSafeguardState: syncAlertCallCallerIdSafeguardState,
+	showAlertCallSelfTriggerWarning: showAlertCallSelfTriggerWarning,
+	showMessage: showMessage,
+	alertCallSelfTriggerWarningDurationSeconds: alertCallSelfTriggerWarningDurationSeconds,
+	alertCallSelfTriggerWarningTimeoutMs: alertCallSelfTriggerWarningTimeoutMs,
+	initializeRunNowAvailabilityFromBootstrap: initializeRunNowAvailabilityFromBootstrap,
+	renderAlertCallDestinations: renderAlertCallDestinations,
+	updateAlertCallDestinationHiddenField: updateAlertCallDestinationHiddenField,
+	updateAlertCallStrategyEditorState: updateAlertCallStrategyEditorState,
+	renderAlertHistory: renderAlertHistory,
+	renderIncidents: renderIncidents,
+	loadInboundRoutes: loadInboundRoutes,
+	updateDidScopeEditorState: updateDidScopeEditorState,
+	updateDidRouteActionButtonState: updateDidRouteActionButtonState,
+	applyDidRouteAction: applyDidRouteAction,
+	addRouteToList: addRouteToList,
+	addScheduleRowFromEditor: addScheduleRowFromEditor,
+	getRuleEditorDirty: function () { return ruleEditorDirty; },
+	clearRuleEditorDirty: function () { ruleEditorDirty = false; updateRuleTestEmailState(); },
+	loadPagedTable: loadPagedTable,
+	changeTablePage: changeTablePage,
+	changeTableSort: changeTableSort,
+	requestTablePage: requestTablePage,
+	updateTableRowBatching: updateTableRowBatching,
+	showMoreTableRows: showMoreTableRows,
+	showLessTableRows: showLessTableRows,
+	pageState: function (selector) { return tablePageStates[selector]; },
+	batchState: function (selector) { return tableBatchStates[selector]; }
+};
+})(jQuery);`);
 vm.runInContext(source, context, {timeout: 5000});
 context.ajax = function (command, payload, done, onComplete, options) {
 	payload = payload || {};
@@ -2283,6 +2637,93 @@ if (context.$ && typeof context.$.ajax === 'function') {
 	};
 }
 const hooks = context.window.__hooks;
+hooks.renderAlertHistory([]);
+assert(context.window.__alertCallFailureSummary('accepted', '') === 'Incident accepted', 'accepted Alert History status should render as Incident accepted');
+
+const inboundRoutes = [
+	{route_key: 'first|', route_label: 'First Route', did_value: 'first', cid_value: ''},
+	{route_key: 'second|', route_label: 'Second Route', did_value: 'second', cid_value: ''}
+];
+const defaultAjax = context.ajax;
+context.ajax = function (command, payload, done) {
+	if (command === 'getinboundroutes') {
+		done({routes: inboundRoutes});
+		return {done: function () { return this; }, fail: function () { return this; }};
+	}
+	return defaultAjax(command, payload, done);
+};
+hooks.loadInboundRoutes();
+assert($('#rc-route-pick').html().indexOf('<option value="" selected>Select an inbound route…</option>') === 0, 'route selector should render the selected empty placeholder first');
+assert($('#rc-route-pick').val() === '', 'route selector should initially select the empty placeholder');
+assert($('#rc-add-did-include').prop('disabled') === true && $('#rc-add-did-exclude').prop('disabled') === true, 'placeholder should keep both route actions disabled');
+assert($('#rc-route-pick').prop('disabled') === true && $('#rc-route-pick').els[0].classes.has('rc-control-disabled'), 'Include All DIDs should disable and grey out the inbound route selector');
+assert(hooks.applyDidRouteAction('include') === false && hooks.applyDidRouteAction('exclude') === false, 'placeholder should be rejected by both route action paths');
+assert($('#rc-did-include-list').find('li').length === 1 && $('#rc-did-include-list').find('li').text() === 'All DIDs', 'empty Included Routes should display the All DIDs visual default');
+assert($('#rc-did-exclude-list').find('li').length === 1 && $('#rc-did-exclude-list').find('li').text() === 'No DIDs', 'empty Excluded Routes should display the No DIDs visual default');
+assert(hooks.collectRouteList($('#rc-did-include-list')).length === 0 && hooks.collectRouteList($('#rc-did-exclude-list')).length === 0, 'semantic defaults must not be collected as real route rows');
+$('#rc-did-include-list, #rc-did-exclude-list').empty();
+hooks.updateDidRouteListDefaults();
+assert($('#rc-did-include-list').find('li').text() === 'All DIDs' && $('#rc-did-exclude-list').find('li').text() === 'No DIDs', 'restoring empty saved route lists should show both semantic defaults');
+
+$('#rc-rule-did-mode').val('selected');
+hooks.updateDidScopeEditorState();
+assert($('#rc-did-include-col').els[0].hidden === false && $('#rc-did-exclude-col').els[0].hidden === false, 'both DID route lists should remain visible in Select DIDs mode');
+assert($('#rc-route-pick').prop('disabled') === false && !$('#rc-route-pick').els[0].classes.has('rc-control-disabled'), 'Select DIDs should enable the inbound route selector');
+
+$('#rc-route-pick').val('first|');
+hooks.updateDidRouteActionButtonState();
+assert($('#rc-add-did-include').prop('disabled') === false && $('#rc-add-did-exclude').prop('disabled') === false, 'neutral state should allow either action for an unused route');
+assert(hooks.applyDidRouteAction('exclude') === true, 'Exclude Route should enter exclude mode');
+assert($('#rc-route-pick').html().indexOf('value="first|"') === -1, 'an excluded route should disappear from the shared selector');
+assert($('#rc-add-did-include').prop('disabled') === true, 'exclude mode should disable Include Route');
+assert($('#rc-did-include-col').els[0].classes.has('rc-control-disabled'), 'exclude mode should grey the empty Included Routes side');
+$('#rc-route-pick').val('second|');
+hooks.updateDidRouteActionButtonState();
+assert($('#rc-add-did-include').prop('disabled') === true && $('#rc-add-did-exclude').prop('disabled') === false, 'exclude mode should allow additional exclusions only');
+assert(hooks.applyDidRouteAction('include') === false, 'an include must be blocked while exclusions exist');
+assert(hooks.collectRouteList($('#rc-did-exclude-list')).length === 1, 'blocked include must not clear existing exclusions');
+assert(hooks.applyDidRouteAction('exclude') === true, 'a second exclusion should be accepted');
+assert(hooks.collectRouteList($('#rc-did-exclude-list')).length === 2, 'exclude mode should retain multiple exclusions');
+$('#rc-did-exclude-list').find('button').first().trigger('click');
+assert(hooks.collectRouteList($('#rc-did-exclude-list')).length === 1, 'removing one exclusion should remain in exclude mode');
+$('#rc-did-exclude-list').find('button').first().trigger('click');
+assert($('#rc-did-exclude-list').find('li').text() === 'No DIDs', 'removing the final exclusion should restore No DIDs');
+assert(!$('#rc-did-include-col').els[0].classes.has('rc-control-disabled'), 'removing the final exclusion should restore neutral state');
+$('#rc-route-pick').val('first|');
+hooks.updateDidRouteActionButtonState();
+assert($('#rc-add-did-include').prop('disabled') === false && $('#rc-add-did-exclude').prop('disabled') === false, 'neutral state after exclusions should re-enable both actions');
+
+assert(hooks.applyDidRouteAction('include') === true, 'Include Route should enter include mode');
+assert($('#rc-route-pick').html().indexOf('value="first|"') === -1, 'an included route should disappear from the shared selector');
+assert($('#rc-add-did-exclude').prop('disabled') === true, 'include mode should disable Exclude Route');
+assert($('#rc-did-exclude-col').els[0].classes.has('rc-control-disabled'), 'include mode should grey the empty Excluded Routes side');
+$('#rc-route-pick').val('second|');
+hooks.updateDidRouteActionButtonState();
+assert($('#rc-add-did-include').prop('disabled') === false && $('#rc-add-did-exclude').prop('disabled') === true, 'include mode should allow additional includes only');
+assert(hooks.applyDidRouteAction('exclude') === false, 'an exclusion must be blocked while includes exist');
+assert(hooks.collectRouteList($('#rc-did-include-list')).length === 1, 'blocked exclusion must not clear existing includes');
+assert(hooks.applyDidRouteAction('include') === true, 'a second include should be accepted');
+assert(hooks.collectRouteList($('#rc-did-include-list')).length === 2, 'include mode should retain multiple includes');
+$('#rc-did-include-list').find('button').first().trigger('click');
+assert(hooks.collectRouteList($('#rc-did-include-list')).length === 1, 'removing one include should remain in include mode');
+$('#rc-did-include-list').find('button').first().trigger('click');
+assert($('#rc-did-include-list').find('li').text() === 'All DIDs', 'removing the final include should restore All DIDs');
+assert(!$('#rc-did-exclude-col').els[0].classes.has('rc-control-disabled'), 'removing the final include should restore neutral state');
+$('#rc-route-pick').val('first|');
+hooks.updateDidRouteActionButtonState();
+assert($('#rc-add-did-include').prop('disabled') === false && $('#rc-add-did-exclude').prop('disabled') === false, 'neutral state after includes should re-enable both actions');
+
+assert(hooks.applyDidRouteAction('exclude') === true, 'a valid exclusions-only configuration should be restorable');
+$('#rc-rule-did-mode').val('all');
+hooks.updateDidScopeEditorState();
+assert($('#rc-route-pick').prop('disabled') === true, 'Include All DIDs should disable inbound route selection');
+assert($('#rc-add-did-include').prop('disabled') === true && $('#rc-add-did-exclude').prop('disabled') === true, 'Include All DIDs should disable both route actions');
+assert(hooks.collectRouteList($('#rc-did-exclude-list')).length === 1, 'scope switching should retain a valid exclusions-only configuration');
+$('#rc-rule-did-mode').val('selected');
+hooks.updateDidScopeEditorState();
+assert(hooks.collectRouteList($('#rc-did-exclude-list')).length === 1, 'switching back to Select DIDs should retain the valid exclusions-only configuration');
+assert(!$('#rc-did-exclude-col').els[0].classes.has('rc-control-disabled'), 'exclusions-only configuration should re-enable exclusion controls');
+
 const warningNotieAlerts = [];
 const genericToasts = [];
 const fallbackTimeoutsMs = [];
@@ -2772,6 +3213,240 @@ roundTripRows = readAlertCallDestinationStates();
 assert(roundTripRows[0].checkboxChecked === true && roundTripRows[1].checkboxChecked === false, 'switching back to Ordered should restore the original mixed Keep Trying choices');
 assert(roundTripRows[0].orderedState === '1' && roundTripRows[1].orderedState === '0', 'switching back to Ordered should keep the preserved Ordered-state values intact');
 
+// Test Email must become unavailable after custom editor mutations that emit no input/change event.
+function armTestEmail(label) {
+	$('#rc-rule-email-recipients').val('alerts@example.com');
+	hooks.clearRuleEditorDirty();
+	assert($('#rc-rule-test-email').prop('disabled') === false, label + ': Test Email should be available with clean state and valid saved recipients');
+}
+function assertTestEmailDisabled(label) {
+	assert(hooks.getRuleEditorDirty() === true && $('#rc-rule-test-email').prop('disabled') === true, label + ': Test Email should be unavailable after an unsaved editor mutation');
+}
+function assertTestEmailStillAvailable(label) {
+	assert(hooks.getRuleEditorDirty() === false && $('#rc-rule-test-email').prop('disabled') === false, label + ': Test Email should remain available');
+}
+function destinationOrder() {
+	return $('#rc-rule-alert-call-destination-list').find('li').els.map(function (element) { return element.attrs['data-destination']; });
+}
+
+$('#rc-rule-did-mode').val('selected');
+$('#rc-did-include-list, #rc-did-exclude-list').empty();
+hooks.updateDidRouteListDefaults();
+hooks.updateDidScopeEditorState();
+armTestEmail('DID load path');
+assert(hooks.addRouteToList($('#rc-did-exclude-list'), inboundRoutes[0], 'exclude') === true, 'rendering a saved exclusion should succeed');
+assertTestEmailStillAvailable('rendering saved DID rows');
+$('#rc-did-exclude-list').find('button').first().trigger('click');
+assert(hooks.collectRouteList($('#rc-did-exclude-list')).length === 0, 'route remove should remove the saved exclusion');
+assertTestEmailDisabled('removing a DID route');
+
+armTestEmail('DID add');
+$('#rc-route-pick').val('second|');
+hooks.updateDidRouteActionButtonState();
+assert(hooks.applyDidRouteAction('include') === true, 'Include Route should add the selected route');
+assertTestEmailDisabled('adding a DID route');
+armTestEmail('DID rejected add');
+assert(hooks.applyDidRouteAction('exclude') === false, 'Exclude Route should be rejected while includes exist');
+assertTestEmailStillAvailable('rejected DID route action');
+
+if (byId['rc-schedule-table'].children.indexOf(byId['rc-schedule-table-body']) === -1) {
+	byId['rc-schedule-table'].append(byId['rc-schedule-table-body']);
+}
+armTestEmail('Schedule add');
+const scheduleRowsBefore = $('#rc-schedule-table tbody tr').length;
+hooks.addScheduleRowFromEditor();
+assert($('#rc-schedule-table tbody tr').length === scheduleRowsBefore + 1, 'Add Schedule should add a schedule row');
+assertTestEmailDisabled('adding a schedule row');
+armTestEmail('Schedule remove');
+$('#rc-schedule-table tbody').find('.rc-schedule-remove').first().trigger('click');
+assertTestEmailDisabled('removing a schedule row');
+
+$('#rc-rule-alert-call-enabled').prop('checked', true);
+$('#rc-rule-alert-call-strategy').val('ordered');
+armTestEmail('Alert Call load path');
+hooks.renderAlertCallDestinations('100|1, 101|0', true);
+assertTestEmailStillAvailable('rendering saved Alert Call destinations');
+
+armTestEmail('Alert Call reorder');
+const reorderItems = $('#rc-rule-alert-call-destination-list').find('li');
+reorderItems.els[0].classes.add('rc-dragging');
+$(reorderItems.els[1]).trigger('drop', { preventDefault: function () {}, originalEvent: { dataTransfer: {} } });
+reorderItems.els[0].classes.delete('rc-dragging');
+assert(destinationOrder().join(',') === '101,100', 'drag/drop should reorder Alert Call destinations');
+assertTestEmailDisabled('reordering Alert Call destinations');
+
+armTestEmail('Alert Call remove');
+$('#rc-rule-alert-call-destination-list').find('.rc-alert-call-destination-remove').first().trigger('click');
+assert(destinationOrder().join(',') === '100', 'Remove should remove the Alert Call destination');
+assertTestEmailDisabled('removing an Alert Call destination');
+
+armTestEmail('Alert Call add');
+$('#rc-rule-alert-call-destination-input').val('2002');
+hooks.addAlertCallDestinationsFromInput();
+assert(destinationOrder().indexOf('2002') !== -1, 'Add should append the Alert Call destination');
+assertTestEmailDisabled('adding an Alert Call destination');
+armTestEmail('Alert Call duplicate add');
+$('#rc-rule-alert-call-destination-input').val('2002');
+hooks.addAlertCallDestinationsFromInput();
+assertTestEmailStillAvailable('duplicate Alert Call destination add');
+
+$('#rc-rule-email-recipients').val('');
+hooks.clearRuleEditorDirty();
+assert($('#rc-rule-test-email').prop('disabled') === true, 'Test Email should remain unavailable without valid recipients even when clean');
+
+const pageRequests = [];
+function alertPage(offset, total) {
+	const rows = [];
+	const count = Math.min(25, Math.max(0, total - offset));
+	for (let index = 0; index < count; index += 1) {
+		const id = total - offset - index;
+		rows.push({id: id, incident_id: id, rule_id: 1, subject_key: 'page-' + id, subject_label: 'page-' + id, action_type: 'gui', event_type: 'initial', delivery_status: 'recorded', stage_n: 0, created_at: '2026-10-01 12:00:00', successful_at: null, failure_detail: '', incident_mode: 'repeat'});
+	}
+	return {status: true, alertHistory: rows, offset: offset, limit: 25, total: total};
+}
+const uiPageResponses = [alertPage(0, 321), alertPage(25, 321), alertPage(25, 321), alertPage(300, 321)];
+context.window.__testAjaxInterceptor = function (command, payload, done, onComplete) {
+	pageRequests.push({command: command, payload: Object.assign({}, payload)});
+	assert(command === 'getalerthistory', 'Alert History navigation should use the existing getalerthistory endpoint');
+	assert(payload.sort_key === 'time' && payload.sort_direction === 'desc', 'Alert History should load with its independent default sort');
+	const response = uiPageResponses.shift();
+	assert(response && response.alertHistory.length <= 25, 'each response to the browser must contain at most 25 records');
+	assert(payload.offset === response.offset, 'the requested offset should match the rendered page');
+	done(response);
+	if (onComplete) { onComplete(); }
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.loadPagedTable('#rc-alert-history-table');
+assert($('#rc-alert-history-table tbody tr').length === 25, 'initial Alert History page should render exactly 25 records');
+assert(pageRequests.length === 1 && pageRequests[0].payload.offset === 0, 'initial page request should start at offset zero');
+assert(hooks.pageState('#rc-alert-history-table').total === 321, 'pagination state should retain the complete record count');
+hooks.changeTablePage('#rc-alert-history-table', 25);
+assert(pageRequests.length === 2 && pageRequests[1].payload.offset === 25, 'Next should request the middle page by offset');
+assert($('#rc-alert-history-table tbody tr').length === 25, 'Next should replace, not append, the displayed records');
+assert(hooks.pageState('#rc-alert-history-table').offset === 25, 'middle-page navigation should update only this table offset');
+hooks.loadPagedTable('#rc-alert-history-table', {silent: true});
+assert(pageRequests.length === 3 && pageRequests[2].payload.offset === 25, 'background refresh should preserve the selected Alert History page');
+hooks.changeTablePage('#rc-alert-history-table', 300);
+assert(pageRequests.length === 4 && pageRequests[3].payload.offset === 300, 'last page navigation should request the final aligned offset');
+assert($('#rc-alert-history-table tbody tr').length === 21, 'final page should correctly render an incomplete page');
+assert(hooks.pageState('#rc-alert-history-table').total === 321, 'last page should keep the complete total rather than count only displayed rows');
+
+const activePageRequests = [];
+function incidentPage(offset, total) {
+	const rows = [];
+	const count = Math.min(25, Math.max(0, total - offset));
+	for (let index = 0; index < count; index += 1) {
+		const id = total - offset - index;
+		rows.push({id: id, rule_id: 1, subject_key: 'active-' + id, subject_label: 'active-' + id, mode: 'repeat', state: 'active', updated_at: '2026-10-01 13:00:00'});
+	}
+	return {status: true, incidents: rows, offset: offset, limit: 25, total: total};
+}
+const activePageResponses = [incidentPage(0, 51), incidentPage(25, 51), incidentPage(0, 51), incidentPage(0, 51)];
+const savedSortPreferences = [];
+context.window.__testAjaxInterceptor = function (command, payload, done, onComplete) {
+	if (command === 'saveuisetting') {
+		savedSortPreferences.push(Object.assign({}, payload));
+		done({status: true});
+		if (onComplete) { onComplete(); }
+		return {done: function () { return this; }, fail: function () { return this; }};
+	}
+	activePageRequests.push({command: command, payload: Object.assign({}, payload)});
+	assert(command === 'getincidents' && payload.view === 'active', 'active incident pages should preserve the active-state filter');
+	assert(payload.sort_key === (activePageRequests.length >= 3 ? 'count' : 'updated'), 'Active Incidents should send its independent selected sort');
+	assert(payload.sort_direction === (activePageRequests.length === 3 ? 'asc' : 'desc'), 'Active Incidents should send the selected direction');
+	const response = activePageResponses.shift();
+	assert(response.incidents.length <= 25, 'active incident response should not exceed 25 rows');
+	done(response);
+	if (onComplete) { onComplete(); }
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.loadPagedTable('#rc-active-incidents-table');
+assert($('#rc-active-incidents-table tbody tr').length === 25, 'Active Incidents should initially render 25 rows');
+hooks.changeTablePage('#rc-active-incidents-table', 25);
+assert(activePageRequests.length === 2 && activePageRequests[1].payload.offset === 25, 'Active Incidents Next should fetch the next offset');
+assert($('#rc-active-incidents-table tbody tr').length === 25, 'Active Incidents Next should replace the previous page');
+assert(hooks.pageState('#rc-active-incidents-table').offset === 25, 'Active Incidents should maintain a separate page offset from Alert History');
+hooks.changeTableSort('#rc-active-incidents-table', 'count');
+assert(savedSortPreferences.length === 1 && savedSortPreferences[0].table === 'active_incidents' && savedSortPreferences[0].sort_key === 'count' && savedSortPreferences[0].sort_direction === 'asc', 'sorting should persist the selected table, column and direction');
+assert(activePageRequests.length === 3 && activePageRequests[2].payload.offset === 0, 'changing a sort should request that table\'s first page');
+assert(hooks.pageState('#rc-active-incidents-table').sortKey === 'count' && hooks.pageState('#rc-active-incidents-table').sortDirection === 'asc', 'sorting should update only that table\'s state');
+hooks.changeTableSort('#rc-active-incidents-table', 'count');
+assert(savedSortPreferences.length === 2 && savedSortPreferences[1].sort_direction === 'desc', 'selecting the active heading again should persist the reversed direction');
+assert(activePageRequests.length === 4 && activePageRequests[3].payload.sort_direction === 'desc', 'reversing a sort should fetch the updated database ordering');
+assert(hooks.pageState('#rc-alert-history-table').offset === 300 && hooks.pageState('#rc-alert-history-table').sortKey === 'time', 'sorting one table must not change another table\'s page or sort state');
+
+const staleCallbacks = [];
+context.window.__testAjaxInterceptor = function (command, payload, done) {
+	staleCallbacks.push({payload: Object.assign({}, payload), done: done});
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.requestTablePage('#rc-active-incidents-table', {silent: true}, true);
+hooks.pageState('#rc-active-incidents-table').offset = 25;
+hooks.requestTablePage('#rc-active-incidents-table', {silent: true}, true);
+staleCallbacks[1].done(incidentPage(25, 51));
+staleCallbacks[0].done(incidentPage(0, 51));
+assert(hooks.pageState('#rc-active-incidents-table').offset === 25, 'a stale AJAX response must not overwrite a newer page selection');
+assert($('#rc-active-incidents-table tbody tr').length === 25, 'stale response protection should leave one page rendered');
+
+const rulesBatchBody = $('#rc-rules-table-body').get(0);
+for (let index = 0; index < 16; index += 1) {
+	rulesBatchBody.append(new Element('tr'));
+	rulesBatchBody.append(new Element('tr', '', ['rc-rule-explainer-row']));
+}
+hooks.updateTableRowBatching('#rc-rules-table');
+let rulesBatchRows = $('#rc-rules-table tbody tr').els;
+assert(rulesBatchRows.filter(function (row) { return !row.hidden; }).length === 30, 'Rules batching should initially show 15 rule/explainer pairs');
+assert(rulesBatchRows.every(function (row, index) { return row.hidden === rulesBatchRows[index ^ 1].hidden; }), 'Rules batching should never separate a rule row from its explainer row');
+hooks.showMoreTableRows('#rc-rules-table');
+assert(hooks.batchState('#rc-rules-table').visibleUnits === 17 && rulesBatchRows.every(function (row) { return !row.hidden; }), 'Rules Show More handler should reveal the next 15 pairs while keeping each explainer together');
+hooks.showLessTableRows('#rc-rules-table');
+rulesBatchRows = $('#rc-rules-table tbody tr').els;
+assert(hooks.batchState('#rc-rules-table').visibleUnits === 15 && rulesBatchRows.filter(function (row) { return !row.hidden; }).length === 30, 'Rules Show Less handler should return to 15 visible rule/explainer pairs');
+
+const scheduleBatchBody = $('#rc-schedule-table-body').get(0);
+scheduleBatchBody.children = [];
+for (let index = 0; index < 32; index += 1) {
+	scheduleBatchBody.append(new Element('tr'));
+}
+hooks.updateTableRowBatching('#rc-schedule-table');
+assert($('#rc-schedule-table tbody tr').els.filter(function (row) { return !row.hidden; }).length === 15, 'Schedule batching should initially show 15 rows');
+hooks.showMoreTableRows('#rc-schedule-table');
+assert(hooks.batchState('#rc-schedule-table').visibleUnits === 30 && $('#rc-schedule-table tbody tr').els.filter(function (row) { return !row.hidden; }).length === 30, 'Schedule Show More handler should reveal the next 15 rows');
+hooks.showLessTableRows('#rc-schedule-table');
+assert(hooks.batchState('#rc-schedule-table').visibleUnits === 15 && $('#rc-schedule-table tbody tr').els.filter(function (row) { return !row.hidden; }).length === 15, 'Schedule Show Less handler should restore the first 15 rows');
+
+const delayedSortSaves = [];
+const recentPageRequests = [];
+context.window.__testAjaxInterceptor = function (command, payload, done, onComplete) {
+	if (command === 'saveuisetting') {
+		delayedSortSaves.push({payload: Object.assign({}, payload), done: done, onComplete: onComplete});
+		return {done: function () { return this; }, fail: function () { return this; }};
+	}
+	recentPageRequests.push(Object.assign({}, payload));
+	done({status: true, incidents: [], offset: 0, limit: 25, total: 0});
+	if (onComplete) { onComplete(); }
+	return {done: function () { return this; }, fail: function () { return this; }};
+};
+hooks.changeTableSort('#rc-recent-incidents-table', 'created');
+hooks.changeTableSort('#rc-recent-incidents-table', 'rule');
+assert(delayedSortSaves.length === 1 && delayedSortSaves[0].payload.sort_key === 'created' && delayedSortSaves[0].payload.sort_direction === 'asc', 'the first queued sort save should capture its own intended values');
+delayedSortSaves[0].done({status: true});
+delayedSortSaves[0].onComplete();
+assert(delayedSortSaves.length === 2 && delayedSortSaves[1].payload.sort_key === 'rule' && delayedSortSaves[1].payload.sort_direction === 'asc', 'a rapid follow-up sort should save its own values rather than the latest mutable state');
+assert(recentPageRequests.length === 0, 'a stale first sort save should not trigger a page load or overwrite the newer selection');
+delayedSortSaves[1].done({status: true});
+delayedSortSaves[1].onComplete();
+assert(recentPageRequests.length === 1 && recentPageRequests[0].sort_key === 'rule', 'the latest successful sort should load rows using its saved preference');
+
+hooks.changeTableSort('#rc-recent-incidents-table', 'subject');
+hooks.changeTableSort('#rc-recent-incidents-table', 'mode');
+delayedSortSaves[2].done({status: true});
+delayedSortSaves[2].onComplete();
+assert(delayedSortSaves[3].payload.sort_key === 'mode', 'the newest rapid sort should remain queued after its predecessor succeeds');
+delayedSortSaves[3].onComplete();
+assert(hooks.pageState('#rc-recent-incidents-table').sortKey === 'subject' && hooks.pageState('#rc-recent-incidents-table').sortDirection === 'asc', 'a failed latest preference save should restore the most recently successful sort');
+assert(recentPageRequests.length === 1, 'a failed latest preference save should not issue a page request for an unsaved sort');
+
 process.stdout.write('OK');
 NODE;
 $behaviorOutput = shell_exec('node -e ' . escapeshellarg($behaviorScript));
@@ -2802,7 +3477,7 @@ assert_true(strpos($jsSource, 'function applyAlertCallCallerIdSelfTriggerSafegua
 assert_true(strpos($jsSource, 'function applyAlertCallCallerIdSelfTriggerSafeguardForSave(options) {') !== false, 'rule editor should define a save-time helper that only applies Caller ID safeguards when relevant changes occurred');
 assert_true(strpos($jsSource, 'function hasAlertCallCallerIdSafeguardTrigger(previousState, nextState) {') !== false, 'rule editor should define explicit safeguard trigger detection for relevant Caller ID and Alert Call transitions');
 assert_true(strpos($jsSource, "Alert Call Caller ID matches an Only monitor these callers entry.") !== false, 'Caller ID safeguard should provide explicit include-list conflict guidance');
-assert_true(strpos($jsSource, 'addAlertCallDestination(destinationRow.destination, destinationRow.keepTrying);') !== false, 'Add action should still attempt to add Alert Call destination while preserving de-duplication');
+assert_true(strpos($jsSource, 'if (addAlertCallDestination(destinationRow.destination, destinationRow.keepTrying)) {') !== false, 'Add action should still attempt to add Alert Call destination while preserving de-duplication');
 assert_true(strpos($jsSource, "if (ensureCallerExcludeDestination(destinationRow.destination)) {") !== false, 'Add action should ensure Ignore callers contains the destination even when the destination already exists');
 assert_true(strpos($jsSource, "if (autoAddedIgnoreEntries > 0) {") !== false && strpos($jsSource, 'showAlertCallSelfTriggerWarning();') !== false, 'adding one or more new Alert Call destinations should show a one-time warning when Ignore callers entries are auto-added');
 assert_true(strpos($jsSource, 'showAlertCallSelfTriggerWarning(alertCallCallerIdSelfTriggerWarning);') !== false, 'Caller ID safeguard should show the dedicated Caller ID self-trigger warning text');
@@ -2838,14 +3513,18 @@ assert_true(strpos($viewSource, 'id="rc-rule-alert-call-strategy"') !== false, '
 assert_true(strpos($viewSource, 'id="rc-rule-alert-call-keep-trying"') === false, 'rule editor view should not render a global alert-call keep-trying field');
 assert_true(strpos($viewSource, '<select id="rc-rule-alert-call-recording-id" class="form-control">') !== false, 'rule editor view should render a FreePBX-style system recording selector');
 assert_true(substr_count($viewSource, 'id="rc-alert-call-language-table"') === 1, 'admin UI must render one Alert Call language table');
+assert_true(strpos($viewSource, '<tr<?php echo !empty($languageStatus[\'active\']) ? \' class="info"\' : \'\'; ?>>') !== false, 'initial active Alert Call language row must retain the info class');
+assert_true(strpos($jsSource, '$row.addClass(\'info\');') !== false, 'refreshed active Alert Call language rows must retain the info class');
+assert_true(strpos($cssSource, '.repeatcaller #rc-alert-call-language-table > tbody > tr.info > td {') !== false && strpos($cssSource, 'background-color: #d9edf7;') !== false, 'module CSS must define the Bootstrap 3 info background for active Alert Call language cells');
+assert_true(substr_count($cssSource, 'tr.info > td') === 1 && strpos($cssSource, '.repeatcaller .info') === false, 'active-language highlighting must remain scoped to the Alert Call language table without generic info styling');
 assert_true(strpos($viewSource, 'id="rc-alert-call-language-support"') === false && strpos($viewSource, 'Alert Call Language Status') === false, 'admin UI must remove the old Alert Call Language Status panel');
 assert_true(strpos($viewSource, "_('Global Settings')") < strpos($viewSource, 'id="rc-alert-call-language-table"'), 'language table must be inside Global Settings');
 assert_true(strpos($viewSource, 'id="rc-alert-call-language-table"') < strpos($viewSource, "_('Default Country Code')"), 'language table must appear above Default Country Code');
 assert_true(strpos($viewSource, "<?php echo _('Available Codecs'); ?></th>") !== false, 'language table must name required-prompt-scoped audio formats Available Codecs');
 assert_true((bool)preg_match('/Language[\s\S]*Locale[\s\S]*Available Codecs[\s\S]*Status[\s\S]*Alert Call Language[\s\S]*Sample/', $viewSource), 'language table must include the six administrator-facing columns in the required order');
 assert_true(strpos($viewSource, "Shows only the audio codecs available for the required Alert Call prompts, not all codecs found in the language directory.") !== false, 'Available Codecs column must define its required-prompt scope inline');
-assert_true(strpos($viewSource, 'Alert Call languages are based on installed audio files that can provide the required prompts. The status shows whether native audio is available or whether fallback language will be used.') !== false, 'language table must use the concise administrator help text');
-assert_true(strpos($viewSource, '/var/lib/asterisk/sounds') === false && strpos($viewSource, 'available or downloadable FreePBX language packs') === false, 'language table UI must leave filesystem and language-pack details to documentation');
+assert_true(strpos($viewSource, 'Alert Call languages are based on installed audio files that can provide the required prompts, currently found under <code>/var/lib/asterisk/sounds</code>. The status shows whether native audio is available or whether fallback language will be used.') !== false, 'language table must use the concise administrator help text');
+assert_true(strpos($viewSource, 'available or downloadable FreePBX language packs') === false, 'language table UI must leave language-pack details to documentation');
 assert_true(strpos($viewSource, "implode(', ', \$availableCodecs)") !== false, 'initial language table rendering must display multiple available codecs as a clear comma-separated list');
 assert_true(strpos($jsSource, "availableCodecs.join(', ')") !== false, 'refreshed language table rows must display multiple available codecs as a clear comma-separated list');
 assert_true((bool)preg_match('/row\.locale[\s\S]*availableCodecs\.join[\s\S]*append\(\$status\)[\s\S]*row\.alert_call_language[\s\S]*append\(\$\(\'<td\/\>\'\)\.append\(\$sampleButton\)\)/', $jsSource), 'refreshed language table rows must preserve Locale, Available Codecs, Status, Alert Call Language, and Sample order');
@@ -2914,7 +3593,6 @@ assert_true(strpos($cssSource, '.repeatcaller .btn[disabled],') !== false && str
 assert_true(strpos($cssSource, '.repeatcaller .btn[disabled]:hover,') !== false && strpos($cssSource, '.repeatcaller .btn[disabled]:focus,') !== false && strpos($cssSource, '.repeatcaller .btn[disabled]:active,') !== false, 'disabled buttons should explicitly neutralize hover, focus, and active affordances');
 assert_true(strpos($cssSource, 'outline: none;') !== false && strpos($cssSource, 'box-shadow: none;') !== false, 'disabled control styling should remove focus outlines/rings and active shadows');
 assert_true(strpos($cssSource, '.repeatcaller .rc-rule-status:not([disabled]),') !== false && strpos($cssSource, '.repeatcaller .rc-rule-status:not([disabled]):hover,') !== false, 'Status button hover/focus/active styling should apply only when the control is enabled');
-assert_true(strpos($cssSource, '.repeatcaller .rc-route-actions .btn.rc-route-action-active:not([disabled]),') !== false, 'active DID action styling should not apply when the route-action button is disabled');
 assert_true(strpos($cssSource, '.repeatcaller .form-control[disabled]:focus,') !== false && strpos($cssSource, '.repeatcaller .form-control.rc-control-disabled:focus,') !== false, 'disabled form controls should suppress focus ring and preserve muted disabled visuals');
 
 $rootPos = strpos($viewSource, '<div class="repeatcaller"');
@@ -2981,7 +3659,7 @@ assert_true((bool)preg_match('/case \'clearalerthistory\': return \$this->rcHand
 assert_true((bool)preg_match('/private function rcHandleClearAlertHistory\(\): array\s*\{[\s\S]*\$repository->clearIncidentAlertHistory\(\)[\s\S]*\'deleted_count\'\s*=>\s*\$deletedCount,[\s\S]*\}/', $controllerSource), 'clear-history handler must clear alert history table and return deleted_count');
 assert_true((bool)preg_match('/const AJAX_COMMANDS = \[[\s\S]*\'getsuppressedincidents\'[\s\S]*\];/', $controllerSource), 'AJAX command allowlist must include getsuppressedincidents');
 assert_true((bool)preg_match('/case \'getsuppressedincidents\': return \$this->rcHandleGetSuppressedIncidents\(\);/', $controllerSource), 'AJAX dispatcher must route getsuppressedincidents to its handler');
-assert_true(strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array') !== false && strpos($controllerSource, "'suppressedIncidents' =>") !== false && strpos($controllerSource, 'loadActiveSuppressedIncidents($asOf, 300)') !== false, 'operational suppressed-incidents handler must return only active suppression rows');
+assert_true(strpos($controllerSource, 'private function rcHandleGetSuppressedIncidents(): array') !== false && strpos($controllerSource, 'loadActiveSuppressedIncidentsPage($asOf, $offset, $sortKey, $sortDirection)') !== false && strpos($controllerSource, "'total' => \$page['total']") !== false, 'operational suppressed-incidents handler should return filtered offset pages with an accurate total');
 assert_true((bool)preg_match('/const AJAX_COMMANDS = \[[\s\S]*\'clearsuppression\'[\s\S]*\];/', $controllerSource), 'AJAX command allowlist must include clearsuppression');
 assert_true((bool)preg_match('/case \'clearsuppression\': return \$this->rcHandleClearSuppression\(\);/', $controllerSource), 'AJAX dispatcher must route clearsuppression to its handler');
 assert_true(strpos($controllerSource, 'private function rcHandleClearSuppression(): array') !== false && strpos($controllerSource, 'clearSuppressedIncidentHistory') !== false, 'clear-suppression handler must clear the audit row and active suppression state');
@@ -3024,8 +3702,8 @@ assert_true(strpos($jsSource, 'response.languageStatus') === false, 'language re
 assert_true(strpos($jsSource, '$button.find(\'.fa\').addClass(\'fa-spin\');') !== false && strpos($jsSource, '$button.find(\'.rc-refresh-label\').text(\'Refreshing...\');') !== false, 'language refresh button must show a Bootstrap-compatible loading state');
 assert_true(strpos($jsSource, '$button.find(\'.fa\').removeClass(\'fa-spin\');') !== false && strpos($jsSource, '$button.find(\'.rc-refresh-label\').text(\'Refresh\');') !== false, 'language refresh button must clear its loading state after completion');
 assert_true((bool)preg_match('/\.repeatcaller \.rc-alert-call-language-sample \{[\s\S]*width: 30px;[\s\S]*height: 24px;[\s\S]*\}/', $cssSource), 'Sample and Stop controls must retain fixed dimensions across playback states');
-assert_true(strpos($jsSource, "renderAlertHistory((response && response.alertHistory) || []);") !== false, 'Clear Alert History action should refresh the history table from backend response');
-assert_true(strpos($jsSource, "renderSuppressedIncidents(response.suppressedIncidents || []);") !== false, 'suppression-history loader should refresh the table from backend response');
+assert_true(strpos($jsSource, "loadAlertHistory({silent: true});") !== false, 'Clear Alert History action should refresh the history table through the paged loader');
+assert_true(strpos($jsSource, "loadSuppressedIncidents({silent: true});") !== false, 'suppression-history clear action should refresh through the paged loader');
 assert_true(strpos($jsSource, "No rules configured yet.") !== false, 'rules table should render an explicit empty state row when no rules exist');
 assert_true(strpos($jsSource, "No active incidents recorded yet.") !== false, 'active incidents table should render an explicit empty state row when no rows exist');
 assert_true(strpos($jsSource, "No recent incidents recorded yet.") !== false, 'recent incidents table should render an explicit empty state row when no rows exist');
@@ -3083,9 +3761,89 @@ assert_true(strpos($jsSource, "Incident accepted.") !== false, 'accept action to
 assert_true(strpos($jsSource, 'return labels[code] || titleizeFallback(code);') !== false, 'unknown status values should use the safe titleized fallback');
 assert_true(strpos($jsSource, 'var stateLabel = mapCode(rawState, statusLabels) || \'-\';') !== false, 'Active and Recent incidents should compute status through the shared formatter');
 assert_true(substr_count($jsSource, '+ \'<td title="\' + esc(rawState) + \'">\' + esc(stateLabel) + \'</td>\'') === 2, 'Active and Recent incidents should both render the shared formatted status cell');
-assert_true((bool)preg_match('/function renderAlertHistory\(items\) \{[\s\S]*mapCode\(rawStatus, statusLabels\)/', $jsSource), 'Alert History should continue using the same shared status formatter');
+assert_true((bool)preg_match('/function renderAlertHistory\(items, append\) \{[\s\S]*mapCode\(rawStatus, statusLabels\)/', $jsSource), 'Alert History should continue using the same shared status formatter while supporting appended pages');
 
 $csrf = '';
 assert_true($csrf === '', 'missing or invalid csrf token should be rejected by handler guard');
+
+if (session_status() === PHP_SESSION_NONE) {
+	@session_start();
+}
+$savedPageSession = isset($_SESSION) && is_array($_SESSION) ? $_SESSION : [];
+$savedPageRequest = $_REQUEST;
+$savedPageDatabase = FreePBX::Database();
+$suppressionPageDb = make_db();
+FreePBX::setDatabase($suppressionPageDb);
+$_SESSION = [];
+$snapshotAsOf = date('Y-m-d H:i:s');
+$forgedEarlierAsOf = date('Y-m-d H:i:s', strtotime($snapshotAsOf) - 7200);
+$expiredAtSnapshot = date('Y-m-d H:i:s', strtotime($snapshotAsOf) - 3600);
+$validUntil = date('Y-m-d H:i:s', strtotime($snapshotAsOf) + 86400);
+$suppressionPageDb->prepare('INSERT INTO repeatcaller_rules (name, enabled, mode, threshold_count, observation_window_minutes, caller_mode, exclude_withheld, did_scope_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+	->execute(['Suppression Pagination Rule', 1, 'repeat', 2, 60, 'any', 0, 'all']);
+$suppressionRuleId = (int)$suppressionPageDb->lastInsertId();
+$insertSuppressionPage = $suppressionPageDb->prepare('INSERT INTO repeatcaller_incident_suppression_history (related_incident_id, rule_id, rule_name, mode, subject_key, subject_label, matched_call_count, threshold_count, observation_window_minutes, suppression_source, suppression_minutes, suppression_started_at, suppression_expires_at, related_incident_state, detected_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+$insertSuppressionPage->execute([1, $suppressionRuleId, 'Suppression Pagination Rule', 'repeat', 'expired-subject', 'expired-subject', 2, 2, 60, 'suppression', 60, $expiredAtSnapshot, $expiredAtSnapshot, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
+for ($suppressionIndex = 1; $suppressionIndex <= 30; $suppressionIndex++) {
+	$insertSuppressionPage->execute([$suppressionIndex + 1, $suppressionRuleId, 'Suppression Pagination Rule', 'repeat', 'valid-subject-' . $suppressionIndex, 'valid-subject-' . $suppressionIndex, 2, 2, 60, 'suppression', 60, $snapshotAsOf, $validUntil, 'active', $snapshotAsOf, $snapshotAsOf, $snapshotAsOf]);
+}
+$paginationController = new \FreePBX\modules\Repeatcaller(new stdClass());
+$suppressedPageMethod = new ReflectionMethod($paginationController, 'rcHandleGetSuppressedIncidents');
+$suppressedPageMethod->setAccessible(true);
+$_REQUEST = ['offset' => '0'];
+$initialSuppressionPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(true, $initialSuppressionPage['status'], 'initial suppression page should succeed');
+assert_same(25, count($initialSuppressionPage['suppressedIncidents']), 'initial suppression page must return 25 records');
+assert_same(30, $initialSuppressionPage['total'], 'suppression page total should include every matching unexpired record');
+assert_same(0, $initialSuppressionPage['offset'], 'initial suppression page should report offset zero');
+assert_same(25, $initialSuppressionPage['limit'], 'suppression page should report the fixed page size');
+assert_true(!array_key_exists('asOf', $initialSuppressionPage), 'server suppression cutoff must not be returned to the browser');
+assert_same(0, count(array_filter($initialSuppressionPage['suppressedIncidents'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })), 'expired suppression must remain excluded from the first page');
+
+$_REQUEST = ['offset' => '25'];
+$continuedSuppressionPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(true, $continuedSuppressionPage['status'], 'middle offset should retrieve the remaining suppression page');
+assert_same(5, count($continuedSuppressionPage['suppressedIncidents']), 'final suppression page should contain only the remaining records');
+assert_same(30, $continuedSuppressionPage['total'], 'middle suppression page should retain the complete total');
+
+$_REQUEST = ['offset' => '0', 'as_of' => $forgedEarlierAsOf];
+$forgedCutoffPage = $suppressedPageMethod->invoke($paginationController);
+assert_same(30, $forgedCutoffPage['total'], 'client-supplied as_of must not change the server-derived suppression eligibility cutoff');
+assert_same(0, count(array_filter($forgedCutoffPage['suppressedIncidents'], static function (array $row): bool { return (string)$row['subject_key'] === 'expired-subject'; })), 'a forged earlier cutoff must not expose expired suppression rows');
+
+foreach (['-1', '1abc', '999999999999999999999999999999'] as $invalidOffset) {
+	$_REQUEST = ['offset' => $invalidOffset];
+	assert_same(false, $suppressedPageMethod->invoke($paginationController)['status'], 'malformed and overflowing offsets must be rejected');
+}
+$_REQUEST = ['offset' => '0', 'sort_key' => 'time DESC; DROP TABLE repeatcaller_incident_suppression_history'];
+assert_same(false, $suppressedPageMethod->invoke($paginationController)['status'], 'untrusted SQL sort expressions must be rejected');
+$_REQUEST = ['cursor_token' => 'legacy-token'];
+assert_same(false, $suppressedPageMethod->invoke($paginationController)['status'], 'retired cursor tokens must not be accepted as offsets');
+
+$offsetMethod = new ReflectionMethod($paginationController, 'requestTableOffset');
+$offsetMethod->setAccessible(true);
+$_REQUEST = ['offset' => '26'];
+assert_same(26, $offsetMethod->invoke($paginationController), 'valid non-negative integer offsets should be accepted before repository alignment');
+$_REQUEST = ['offset' => '01'];
+assert_same(null, $offsetMethod->invoke($paginationController), 'non-canonical integer offsets should be rejected');
+
+$saveUiSettingMethod = new ReflectionMethod($paginationController, 'rcHandleSaveUiSetting');
+$saveUiSettingMethod->setAccessible(true);
+$_REQUEST = ['table' => 'active_incidents', 'sort_key' => 'count', 'sort_direction' => 'asc'];
+$savedUiSetting = $saveUiSettingMethod->invoke($paginationController);
+assert_same(true, $savedUiSetting['status'], 'valid per-table sort preferences should be saved');
+$_REQUEST = [];
+$loadedSettingsMethod = new ReflectionMethod($paginationController, 'getAlertSettings');
+$loadedSettingsMethod->setAccessible(true);
+$savedSettings = $loadedSettingsMethod->invoke($paginationController);
+assert_same('count', $savedSettings['ui_active_incidents_sort_key'], 'saved sort keys should persist in module settings');
+assert_same('asc', $savedSettings['ui_active_incidents_sort_dir'], 'saved sort directions should persist in module settings');
+$_REQUEST = ['table' => 'active_incidents', 'sort_key' => 'id; DROP TABLE repeatcaller_settings', 'sort_direction' => 'asc'];
+assert_same(false, $saveUiSettingMethod->invoke($paginationController)['status'], 'invalid sort preference values must be rejected without persistence');
+$_REQUEST = ['table' => 'active_incidents', 'sort_key' => 'updated', 'sort_direction' => 'sideways'];
+assert_same(false, $saveUiSettingMethod->invoke($paginationController)['status'], 'invalid sort directions must be rejected');
+FreePBX::setDatabase($savedPageDatabase);
+$_REQUEST = $savedPageRequest;
+$_SESSION = $savedPageSession;
 
 echo "repeat admin contract tests passed\n";

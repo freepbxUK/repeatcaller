@@ -16,6 +16,7 @@ It does not only count missed calls. Answered, busy, failed, abandoned, and othe
 Before configuring rules, confirm:
 
 - the module is installed
+- the installed module version is listed in [README.md](README.md)
 - the Repeat Caller background job is present
 - CDR records are available
 - Inbound Routes are configured
@@ -98,10 +99,12 @@ Save the rule, place controlled test calls, then verify Active Incidents and Ale
 - Exclude withheld callers: excludes withheld identities from this rule.
 - Caller Includes: callers to include when using specific-caller scope. Enter caller numbers separated by spaces, commas or new lines. Mixed separators are supported. Values are saved in a normalized comma-separated format.
 - Caller Excludes: callers to exclude. Enter caller numbers separated by spaces, commas or new lines. Mixed separators are supported. Values are saved in a normalized comma-separated format.
-- DID Scope: All DIDs or Selected DIDs only.
+- DID Scope: Include All DIDs or Select DIDs.
 - Inbound Routes: route selector used for DID include/exclude actions.
-- Included Routes: routes monitored when Selected DIDs only is used.
-- Excluded Routes: routes excluded when All DIDs is used.
+- Included Routes: the exact route set when one or more routes are listed. If
+  empty, it displays `All DIDs` and starts from every route.
+- Excluded Routes: routes removed when Included Routes is empty. If empty, it
+  displays `No DIDs`.
 - Schedules: day/time periods when calls count for this rule.
 - GUI: always enabled history action.
 - Alert Call: optional phone-call notifications.
@@ -153,12 +156,15 @@ and cannot be used until you save or cancel the edit.
 
 ## Table Row Display
 
-Repeat Caller admin tables show up to 15 rows by default.
+Active Incidents, Recent Incidents, Suppressed Incidents, and Alert History
+show up to 25 records per page. Use the Previous and Next controls above each
+table to navigate; the displayed range and total reflect the complete
+matching result set. Select a data heading to sort the full result set, and
+select it again to reverse the direction. Each table remembers its own sort
+preference.
 
-- If more rows exist, Show more reveals the next 15 rows.
-- Show less returns the table to the initial 15-row view.
-- This is a presentation control only; backend retrieval and incident logic are
-	unchanged.
+Rules and Schedule keep their existing Show more and Show less row-batching
+controls.
 
 ## Repeat Mode
 
@@ -191,11 +197,15 @@ Caller controls:
 
 Route controls:
 
-- All DIDs with optional Excluded Routes
-- Selected DIDs only via Included Routes
+- Include All DIDs without route-level filtering
+- Select DIDs using either exclusions from all routes or an exact include set
 
-All DIDs matches every inbound route except routes listed in Excluded Routes.
-Selected DIDs only matches routes listed in Included Routes.
+Include All DIDs matches every inbound route and leaves saved route rows inactive.
+Select DIDs starts from all routes and removes Excluded Routes while Included
+Routes is empty. Once an Included Route is added, Included Routes becomes the
+complete route set. Use one list or the other; the opposite action is disabled
+until the final route is removed. Route selections remain stored when DID Scope
+is changed.
 Route scope follows your FreePBX Inbound Routes configuration.
 
 ## Schedules
@@ -404,6 +414,18 @@ This incident has not been accepted. You can accept it by phone if Alert Calls a
 
 A successful handoff to the PBX mailer does not guarantee external delivery.
 
+### Test Email
+
+Each rule has a Test Email button beside its Email Recipients field.
+
+- It sends to the rule's saved recipients, not to unsaved values in the editor.
+- It is unavailable until the rule has valid saved recipients, and while the
+  rule editor has unsaved changes. Save the rule to make it available again.
+- It uses the same mail transport and From/Reply-To identity as real alert
+  emails, and the message includes the configured FreePBX System Identifier.
+- A success message means the local mailer accepted the message; it does not
+  confirm external delivery.
+
 If mail is missing, see the troubleshooting section below.
 
 ## Receiving Alert Calls
@@ -423,7 +445,7 @@ Operational notes:
 - The selected System Recording language takes priority over the global Sound Languages setting and remains independent of the generated summary language.
 - Multilingual summaries use installed standard Asterisk and FreePBX sounds only. Caller and DID values use Asterisk `SAY DIGITS`; counts and observation windows use `SAY NUMBER`.
 - French is an officially supported native profile with an approved adapted prompt mapping for its standard prompt vocabulary. Repeat alerts speak `conf-thereare`, count, optional DDI, observation window, and caller information; Invert alerts use `queue-less-than` and the threshold with the same essential details. Queue quantity and voicemail count prompts are not used.
-- Spanish and German use the entire established English generated message because their standard inventories do not provide a straightforward complete mapping for all required behavior. Repeat Caller does not ship or require translated recordings.
+- Spanish and German use the entire established English generated message because their standard inventories do not provide a straightforward complete mapping for all required behaviour. Repeat Caller does not ship or require translated recordings.
 - The Alert Call Language table in Global Settings gives administrators visibility of language availability, resolved playback language, and sample playback capability. The active row is highlighted.
 - **Language:** Friendly language name.
 - **Locale:** Raw Asterisk/FreePBX locale identifier.
@@ -525,7 +547,7 @@ flow.
 Future improvement under consideration:
 
 - A configurable Alert Call ring timeout may be introduced in a future minor
-	release so administrators can tune this behavior to their routing policy
+	release so administrators can tune this behaviour to their routing policy
 	while retaining bounded fail-safe protection.
 
 ## Snooze Monitoring
@@ -624,11 +646,15 @@ Check:
 
 Check:
 
-- Email enabled globally
+- Repeat Caller monitoring enabled
 - Email enabled for the rule
 - recipients configured
 - FreePBX mail settings
-- Email From Address
+- Email From Address in Advanced Settings: use a bare address such as
+  `asterisk@demodomain.name` to use the configured FreePBX dashboard brand, or
+  `PBX-123 <asterisk@demodomain.name>` to preserve an explicit display name.
+  FreePBX 17 HTML-encoded identities are supported, `Repeat Caller` is the final
+  display-name fallback, and malformed or unsafe From identities are rejected.
 - PBX mail logs
 - Alert History status (Sent or Failed)
 
@@ -662,7 +688,7 @@ Check:
 - Rule Name present
 - valid threshold and window
 - caller includes present for Specific callers
-- route includes present for Selected DIDs only
+- Select DIDs route lists reflect the intended starting set and exclusions
 - valid schedule rows
 - no overnight schedule range
 
@@ -681,4 +707,9 @@ Check:
 
 - [README.md](README.md)
 - [TESTING.md](TESTING.md)
-- GitHub Issues: https://github.com/kierknoby/repeatcaller/issues
+- [FreePBX UK Support](https://freepbx.uk/support/)
+- [Source and issue tracker](https://github.com/freepbxUK/repeatcaller/issues)
+
+For suspected security vulnerabilities, do not post details publicly; contact
+FreePBX UK Support and request private handling. Do not include credentials or
+unredacted customer call information in support requests.

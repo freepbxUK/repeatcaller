@@ -543,7 +543,7 @@ try {
 		'enabled' => '1',
 		'default_country_code' => '44',
 	]);
-	assert_same(1, $didExcludeSummary['incidents_created'], 'all DID scope exclusions should prevent excluded routes from matching');
+	assert_same(2, $didExcludeSummary['incidents_created'], 'Include All DIDs should ignore preserved route rows and match every inbound route');
 
 	$dbPathDidSelected = tempnam(sys_get_temp_dir(), 'repeatcaller_runtime_');
 	if ($dbPathDidSelected === false) {
@@ -555,11 +555,11 @@ try {
 	insert_rule($dbDidSelected, [
 		'name' => 'Selected DID Rule',
 		'mode' => 'repeat',
-		'threshold_count' => 2,
+		'threshold_count' => 1,
 		'observation_window_minutes' => 60,
 		'caller_mode' => 'any',
 		'did_scope_mode' => 'selected',
-		'include_routes' => ['18005550001|'],
+		'include_routes' => [],
 		'exclude_routes' => ['18005550001|'],
 		'schedules' => [['day' => 1, 'start' => '09:00', 'end' => '17:00']],
 	]);
@@ -570,7 +570,7 @@ try {
 		'enabled' => '1',
 		'default_country_code' => '44',
 	]);
-	assert_same(1, $didSelectedSummary['incidents_created'], 'selected DID scope should use include routes only and ignore exclusion rows');
+	assert_same(1, $didSelectedSummary['incidents_created'], 'Select DIDs with no includes should match all routes except explicit exclusions');
 
 	$dbPathRouteNoActive = tempnam(sys_get_temp_dir(), 'repeatcaller_runtime_');
 	if ($dbPathRouteNoActive === false) {
@@ -796,7 +796,7 @@ try {
 	insert_cdr($db2, ['linkedid' => 'S1', 'calldate' => '2026-07-13 09:10:00', 'src' => '01234567890', 'clid' => '01234567890']);
 	insert_cdr($db2, ['linkedid' => 'S2', 'calldate' => '2026-07-13 14:10:00', 'src' => '01234567890', 'clid' => '01234567890']);
 	insert_cdr($db2, ['linkedid' => 'D1', 'calldate' => '2026-07-13 09:20:00', 'src' => '01231111111', 'clid' => '01231111111', 'did' => '18005550001', 'dst' => '18005550001']);
-	insert_cdr($db2, ['linkedid' => 'D2', 'calldate' => '2026-07-13 09:30:00', 'src' => '01231111111', 'clid' => '01231111111', 'did' => '18005550002', 'dst' => '18005550002']);
+	insert_cdr($db2, ['linkedid' => 'D2', 'calldate' => '2026-07-13 09:30:00', 'src' => '01231111111', 'clid' => '01231111111', 'did' => '18005550001', 'dst' => '18005550001']);
 	insert_cdr($db2, ['linkedid' => 'C1', 'calldate' => '2026-07-13 10:00:00', 'src' => '01299999999', 'clid' => '01299999999']);
 	insert_cdr($db2, ['linkedid' => 'C2', 'calldate' => '2026-07-13 10:10:00', 'src' => '01299999999', 'clid' => '01299999999']);
 
@@ -804,8 +804,8 @@ try {
 		'enabled' => '1',
 		'default_country_code' => '44',
 	]);
-	assert_same(1, $summary2['incidents_created'], 'schedules, DID exclusions, and caller exclusions should leave only the scheduled rule incident');
-	assert_same(1, (int)$db2->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'only one rule should create an incident in the exclusion scenario');
+	assert_same(2, $summary2['incidents_created'], 'explicit DID includes should ignore contradictory exclusions while caller exclusions still apply');
+	assert_same(2, (int)$db2->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'the scheduled and explicit-include DID rules should create incidents');
 
 	$dbPath3 = tempnam(sys_get_temp_dir(), 'repeatcaller_runtime_');
 	if ($dbPath3 === false) {
