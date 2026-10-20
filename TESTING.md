@@ -108,6 +108,33 @@ php tests/repeat_release_contract.php
 
 The alerting contract covers first-destination NOANSWER progression, cumulative Ordered stages, mixed Keep Trying values, waiting for all sibling attempts, repeated stages after the final destination, acceptance and late-callback protection, Ring All editor and destination behaviour, and Ignore Callers separation. The admin and release contracts cover the Ring All/Ordered editor round-trip and documentation/help-text parity.
 
+## 1.1.1 Acceptance Notification Regression
+
+Run the alerting, completion, and runtime contracts. They cover GUI and
+telephone acceptance, every reminder mode, absent/active/expired suppression,
+stale reservations, queued pending/failed/snoozed/sending emails, late decline
+callbacks, and acceptance interleaved with marking emails `sending` or delivering them.
+Successfully delivered history must remain unchanged. Accepted incidents must
+not reserve reminders, and outstanding deliveries must be cancelled wherever
+still possible; a transport handover already in progress cannot be recalled.
+
+The runtime contract replays the production acceptance timeline with threshold 3, a 60-minute window,
+suppression 0, and 5-minute reminders: calls at 10:55:52, 11:00:39, 11:04:24,
+telephone acceptance at 11:06:09, then calls at 11:49:46, 11:50:58, 11:57:49,
+and 11:58:05. Expected: one incident, one initial GUI/three-email/Alert Call
+cycle, no reminders, all seven seen journeys retained, and a final rolling
+count of six. A later below-threshold observation closes the accepted incident;
+the next threshold creates a new ID with its own initial alerts. Existing
+suppression-enabled lifecycle tests continue to check blocked new episodes.
+
+Before release on FreePBX 16 and 17, verify acceptance with queued work,
+continued matching calls, observed clearing/rearming, and a new incident.
+Check unchanged unaccepted reminders, snooze, decline, Ordered/Ring All,
+Keep Trying, and acceptance stopping sibling calls. Unit interleavings do not
+prove every real database/transport race. Suppression-setting reconciliation
+is outside this correction: its separate accepted-to-active reactivation issue
+can undermine state-based notification eligibility and must be tested separately.
+
 ## 1.1.1 Internal Alert Call Caller Name
 
 Run the install contract as well as the alerting, admin, and release contracts

@@ -748,6 +748,7 @@ final class RepeatCallerRepository {
 		$state['last_evaluated_at'] = $acceptedAt;
 		$this->saveSubjectState((int)$row['rule_id'], (string)$row['subject_key'], $state);
 		$this->cancelPendingAlertCallAttemptsForIncident($incidentId, $acceptedAt);
+		$this->cancelPendingEmailAlertsForIncident($incidentId, $acceptedAt);
 
 		return true;
 	}
@@ -792,6 +793,19 @@ final class RepeatCallerRepository {
 		}
 		$stmt = $this->pdo->prepare($sql);
 		$stmt->execute($params);
+
+		return $stmt->rowCount();
+	}
+
+	public function cancelPendingEmailAlertsForIncident(int $incidentId, string $now): int {
+		$stmt = $this->pdo->prepare(
+			'UPDATE repeatcaller_incident_alert_history
+			 SET delivery_status = ?, next_retry_at = NULL, failure_detail = ?, updated_at = ?
+			 WHERE incident_id = ? AND action_type = ?
+				AND delivery_status IN (?, ?, ?, ?)
+				AND successful_at IS NULL'
+		);
+		$stmt->execute(['failed', 'cancelled after incident accepted', $now, $incidentId, 'email', 'pending', 'failed', 'snoozed', 'sending']);
 
 		return $stmt->rowCount();
 	}
@@ -1618,23 +1632,14 @@ final class RepeatCallerRepository {
 				' . $alertCallRecordingExpr . ' AS alert_call_recording_id, ' . $alertCallHandleCallerIdUpstreamExpr . ' AS alert_call_handle_callerid_upstream, ' . $alertCallCallerIdExpr . ' AS alert_call_callerid, r.alert_reminder_mode_override
 			 FROM repeatcaller_incidents i
 			 JOIN repeatcaller_rules r ON r.id = i.rule_id
-			 LEFT JOIN repeatcaller_incident_alert_state s ON s.incident_id = i.id
-			 WHERE (
-				i.state = ?
-				OR (
-					i.state = ?
-					AND s.last_alert_at IS NOT NULL
-					AND (i.suppression_expires_at IS NULL OR i.suppression_expires_at <= ?)
-					AND i.last_matched_at > s.last_alert_at
-				)
-			 )
+			 WHERE i.state = ?
 				AND r.enabled = 1
 				AND ' . $isDeletedExpr . ' = 0
-				AND (i.state <> ? OR i.suppression_expires_at IS NULL OR i.suppression_expires_at > ?)
+				AND (i.suppression_expires_at IS NULL OR i.suppression_expires_at > ?)
 			 ORDER BY i.first_matched_at ASC, i.id ASC
 			 LIMIT ' . (int)$limit
 		);
-		$stmt->execute(['active', 'accepted', $now, 'active', $now]);
+		$stmt->execute(['active', $now]);
 
 		return $stmt->fetchAll(PDO::FETCH_ASSOC);
 	}
@@ -1705,9 +1710,10 @@ final class RepeatCallerRepository {
 				 next_due_at = ?,
 				 updated_at = ?
 			 WHERE incident_id = ?
-				AND initial_sent_at IS NULL'
+				AND initial_sent_at IS NULL
+				AND EXISTS (SELECT 1 FROM repeatcaller_incidents i WHERE i.id = incident_id AND i.state = ?)'
 		);
-		$stmt->execute([$lastAlertAt, $lastAlertAt, $nextDueAt, $now, $incidentId]);
+		$stmt->execute([$lastAlertAt, $lastAlertAt, $nextDueAt, $now, $incidentId, 'active']);
 
 		return $stmt->rowCount() > 0;
 	}
@@ -1721,9 +1727,10 @@ final class RepeatCallerRepository {
 				 updated_at = ?
 			 WHERE incident_id = ?
 				AND initial_sent_at IS NOT NULL
-				AND reminders_sent = ?'
+				AND reminders_sent = ?
+				AND EXISTS (SELECT 1 FROM repeatcaller_incidents i WHERE i.id = incident_id AND i.state = ?)'
 		);
-		$stmt->execute([$newRemindersSent, $lastAlertAt, $nextDueAt, $now, $incidentId, $expectedRemindersSent]);
+		$stmt->execute([$newRemindersSent, $lastAlertAt, $nextDueAt, $now, $incidentId, $expectedRemindersSent, 'active']);
 
 		return $stmt->rowCount() > 0;
 	}
@@ -1734,8 +1741,8 @@ final class RepeatCallerRepository {
 				(incident_id, rule_id, subject_key, subject_label, action_type, event_type, stage_n, recipient,
 				 delivery_status, attempted_at, successful_at, next_retry_at, failure_detail, alert_reminder_mode,
 				 dedupe_key, created_at, updated_at)
-			 VALUES
-				(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+			 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			 FROM repeatcaller_incidents WHERE id = ? AND state = ?'
 		);
 
 		try {
@@ -1757,8 +1764,10 @@ final class RepeatCallerRepository {
 				(string)$row['dedupe_key'],
 				(string)$row['created_at'],
 				(string)$row['updated_at'],
+				(int)$row['incident_id'],
+				'active',
 			]);
-			return true;
+			return $stmt->rowCount() > 0;
 		} catch (PDOException $e) {
 			if ($this->isUniqueViolation($e)) {
 				return false;
@@ -1854,9 +1863,10 @@ final class RepeatCallerRepository {
 				 updated_at = ?
 			 WHERE id = ?
 				AND action_type = ?
-				AND delivery_status IN (?, ?, ?)'
+				AND delivery_status IN (?, ?, ?)
+				AND EXISTS (SELECT 1 FROM repeatcaller_incidents i WHERE i.id = incident_id AND i.state = ?)'
 		);
-		$stmt->execute(['sending', $attemptedAt, $attemptedAt, $historyId, 'email', 'pending', 'failed', 'snoozed']);
+		$stmt->execute(['sending', $attemptedAt, $attemptedAt, $historyId, 'email', 'pending', 'failed', 'snoozed', 'active']);
 
 		return $stmt->rowCount() > 0;
 	}
@@ -1869,9 +1879,10 @@ final class RepeatCallerRepository {
 				 updated_at = ?
 			 WHERE id = ?
 				AND action_type = ?
-				AND delivery_status IN (?, ?, ?, ?)'
+				AND delivery_status IN (?, ?, ?, ?)
+				AND EXISTS (SELECT 1 FROM repeatcaller_incidents i WHERE i.id = incident_id AND i.state = ?)'
 		);
-		$stmt->execute(['snoozed', $now, $now, $historyId, 'email', 'pending', 'failed', 'snoozed', 'sending']);
+		$stmt->execute(['snoozed', $now, $now, $historyId, 'email', 'pending', 'failed', 'snoozed', 'sending', 'active']);
 	}
 
 	public function markEmailAlertSent(int $historyId, string $successfulAt): void {
@@ -1896,9 +1907,10 @@ final class RepeatCallerRepository {
 				 next_retry_at = ?,
 				 updated_at = ?
 			 WHERE id = ?
-				AND action_type = ?'
+				AND action_type = ?
+				AND EXISTS (SELECT 1 FROM repeatcaller_incidents i WHERE i.id = incident_id AND i.state = ?)'
 		);
-		$stmt->execute(['failed', $failureDetail, $nextRetryAt, $now, $historyId, 'email']);
+		$stmt->execute(['failed', $failureDetail, $nextRetryAt, $now, $historyId, 'email', 'active']);
 	}
 
 	public function loadDeliverableEmailAlerts(string $now, int $limit = 200): array {
@@ -1916,15 +1928,13 @@ final class RepeatCallerRepository {
 			 WHERE h.action_type = ?
 				AND h.delivery_status IN (?, ?, ?)
 				AND (h.next_retry_at IS NULL OR h.next_retry_at <= ?)
-				AND (
-					(i.state = ? AND (i.suppression_expires_at IS NULL OR i.suppression_expires_at > ?))
-					OR (i.state = ? AND (i.suppression_expires_at IS NULL OR i.suppression_expires_at <= ?))
-				)
+				AND i.state = ?
+				AND (i.suppression_expires_at IS NULL OR i.suppression_expires_at > ?)
 				AND ' . $isDeletedExpr . ' = 0
 			 ORDER BY h.created_at ASC, h.id ASC
 			 LIMIT ' . (int)$limit
 		);
-		$stmt->execute(['email', 'pending', 'failed', 'snoozed', $now, 'active', $now, 'accepted', $now]);
+		$stmt->execute(['email', 'pending', 'failed', 'snoozed', $now, 'active', $now]);
 
 		return $stmt->fetchAll(PDO::FETCH_ASSOC);
 	}
@@ -2385,7 +2395,7 @@ final class RepeatCallerRepository {
 		);
 		$stmt->execute([$historyId, $incidentId, 'alert_call']);
 		$row = $stmt->fetch(PDO::FETCH_ASSOC);
-		if (!is_array($row)) {
+		if (!is_array($row) || (string)$row['incident_state'] !== 'active') {
 			return null;
 		}
 

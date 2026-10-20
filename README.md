@@ -1055,6 +1055,13 @@ a separate event: if suppression has not yet expired it is blocked and recorded
 in Suppressed Incidents; if suppression has already expired the new episode
 creates a new incident and follows the normal alert process.
 
+GUI and telephone acceptance stop all further notification cycles for that
+incident, regardless of reminder mode, disabled suppression, or suppression
+expiry. Queued email and Alert Call attempts are cancelled where still possible;
+previously delivered alert history is preserved. State is checked again before
+email delivery, but a message already handed to the mailer cannot be recalled,
+and acceptance can race with the final external transport handover.
+
 ### Compatibility and Development Notes
 
 Legacy compatibility handling remains where required for upgrades and existing
@@ -1111,6 +1118,12 @@ Future release consideration:
 
 ### 1.1.1, patch release, 20 October 2026
 
+- Stops accepted incidents from generating further GUI, email, or Alert Call
+  notifications, including after suppression expiry or with suppression disabled.
+  Cancels outstanding email work and checks state again before delivery, while
+  preserving accepted-call statistics, clearing/rearming, and new-incident alerts.
+- Adds the production acceptance timeline regression and acceptance/queue
+  interleaving checks without changing normal active-incident reminder timing.
 - Sets the local outgoing connected-line name to `Repeat Caller` on marked
   SIP/PJSIP Alert Call channels matching a genuine FreePBX device's technology
   and dial string, after normal FreePBX caller identity processing.
@@ -1212,11 +1225,12 @@ Future release consideration:
 
 #### Accepted incident suppression
 
-- Prevents accepted incidents from reserving or sending further alerts while
-  rule-and-subject suppression remains active.
+- Corrected in 1.1.1: accepted incidents cannot reserve or deliver further
+  notifications, whether suppression is active, expired, or disabled.
 - Preserves normal Alert Reminders for active unaccepted incidents.
-- Allows genuinely new qualifying activity after suppression expiry to trigger
-  a fresh alert stage.
+- After observed clearing and rearming, a genuinely new qualifying episode can
+  create a new incident if suppression is disabled or expired. Suppression
+  expiry alone does not rearm an incident or resume accepted-incident reminders.
 
 #### Snooze controls
 

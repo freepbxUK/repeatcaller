@@ -431,6 +431,9 @@ try {
 				require_once $moduleRoot . '/Repeatcaller.class.php';
 				$module = new \FreePBX\modules\Repeatcaller(new \stdClass());
 				foreach ($notice['recipients'] as $emailRecipient) {
+					if (!$repository->isIncidentActive($incidentId)) {
+						break;
+					}
 					$sendResult = $module->sendEmail((string)$emailRecipient, $subject, $message);
 					if (empty($sendResult['status'])) {
 						repeatcallerAgiLog('repeatcaller AGI: failed to send decline notification email', $context + ['email_recipient' => (string)$emailRecipient, 'send_error' => (string)($sendResult['message'] ?? 'unknown')]);

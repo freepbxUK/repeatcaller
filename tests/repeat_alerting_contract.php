@@ -880,6 +880,7 @@ final class FakeEmailSender {
 	public array $calls = [];
 	/** @var array<string, string> */
 	public array $failuresByRecipient = [];
+	public $afterSend;
 
 	public function __invoke(string $recipient, string $subject, string $message): array {
 		$this->calls[] = [
@@ -887,6 +888,9 @@ final class FakeEmailSender {
 			'subject' => $subject,
 			'message' => $message,
 		];
+		if (is_callable($this->afterSend)) {
+			call_user_func($this->afterSend, $recipient);
+		}
 
 		if (isset($this->failuresByRecipient[strtolower($recipient)])) {
 			return ['status' => false, 'message' => $this->failuresByRecipient[strtolower($recipient)]];
@@ -1916,14 +1920,141 @@ assert_same(0, (int)$acceptedRepeatStateSuppressed['reminders_sent'], 'DTMF-acce
 $acceptedRepeatDb->prepare('UPDATE repeatcaller_incidents SET last_matched_at = ?, matched_call_count = ?, suppression_expires_at = ? WHERE id = ?')->execute(['2026-07-13 11:05:00', 4, '2026-07-13 11:00:00', $acceptedRepeatIncident]);
 $acceptedRepeatClock->now = '2026-07-13 11:05:00';
 $acceptedRepeatProcessor->run(settings());
-assert_same(1, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'gui'"), 'DTMF-accepted incidents should reserve one fresh GUI reminder after suppression expiry and new activity');
-assert_same(1, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'email'"), 'DTMF-accepted incidents should reserve one fresh email reminder after suppression expiry and new activity');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'gui'"), 'DTMF-accepted incidents must not reserve GUI reminders after suppression expiry and new activity');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'email'"), 'DTMF-accepted incidents must not reserve email reminders after suppression expiry and new activity');
 assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'alert_call'"), 'DTMF-accepted incidents should not restart Alert Call activity after acceptance, even after suppression expiry and new activity');
-assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_2'"), 'DTMF-accepted incidents should restart reminder stages at the first fresh post-suppression stage');
-assert_same(1, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND action_type = 'email' AND event_type LIKE 'reminder_%' AND delivery_status = 'sent'"), 'DTMF-accepted incidents should deliver email once the fresh post-suppression reminder is reserved');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_2'"), 'DTMF-accepted incidents must not restart reminder stages');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND action_type = 'email' AND event_type LIKE 'reminder_%' AND delivery_status = 'sent'"), 'DTMF-accepted incidents must not deliver post-suppression reminder emails');
 $acceptedRepeatStateExpired = $acceptedRepeatDb->query("SELECT last_alert_at, reminders_sent FROM repeatcaller_incident_alert_state WHERE incident_id = {$acceptedRepeatIncident}")->fetch(PDO::FETCH_ASSOC);
-assert_same('2026-07-13 11:05:00', (string)$acceptedRepeatStateExpired['last_alert_at'], 'DTMF-accepted incidents should advance the reminder checkpoint once suppression has expired and a fresh reminder is reserved');
-assert_same(1, (int)$acceptedRepeatStateExpired['reminders_sent'], 'DTMF-accepted incidents should advance the reminder count once suppression has expired and a fresh reminder is reserved');
+assert_same('2026-07-13 10:00:00', (string)$acceptedRepeatStateExpired['last_alert_at'], 'DTMF-accepted incidents must preserve the last-alert checkpoint after suppression expires');
+assert_same(0, (int)$acceptedRepeatStateExpired['reminders_sent'], 'DTMF-accepted incidents must not advance the reminder count after suppression expires');
+
+foreach (['gui', 'alert_call'] as $acceptanceSource) {
+	foreach (['never', '5m', 'hourly', 'daily', 'escalating'] as $reminderMode) {
+		foreach ([null, '2026-07-13 09:59:00', '2026-07-13 12:00:00'] as $suppressionExpiry) {
+			$acceptanceClock = new TestClock('2026-07-13 10:00:00');
+			$acceptanceEmails = new FakeEmailSender();
+			$acceptanceCalls = new FakeCallSender();
+			[$acceptanceDb, $acceptanceProcessor] = create_alert_environment($acceptanceClock, $acceptanceEmails, $acceptanceCalls);
+			$acceptanceRule = insert_rule($acceptanceDb, ['email_enabled' => 1, 'alert_call_enabled' => 1, 'alert_call_destinations' => '801', 'alert_reminder_mode_override' => $reminderMode]);
+			$acceptanceIncident = insert_incident($acceptanceDb, ['rule_id' => $acceptanceRule, 'subject_key' => 'accepted-matrix', 'first_matched_at' => $acceptanceClock->now]);
+			$acceptanceProcessor->run(settings());
+			$acceptanceRepository = new RepeatCallerRepository($acceptanceDb);
+			if ($acceptanceSource === 'gui') {
+				assert_true($acceptanceRepository->acceptActiveIncident($acceptanceIncident, 'operator', '2026-07-13 10:01:00', 'gui'), 'GUI acceptance must succeed');
+			} else {
+				$acceptanceHistoryId = (int)$acceptanceDb->query("SELECT id FROM repeatcaller_incident_alert_history WHERE action_type = 'alert_call'")->fetchColumn();
+				$acceptanceResult = $acceptanceRepository->recordAlertCallDtmfResponse($acceptanceHistoryId, $acceptanceIncident, 'accepted', '801', '1', '2026-07-13 10:01:00');
+				assert_true(!empty($acceptanceResult['accepted']), 'telephone acceptance must succeed');
+			}
+			$historyBefore = $acceptanceDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+			$stateBefore = $acceptanceRepository->loadIncidentAlertState($acceptanceIncident);
+			assert_true(!$acceptanceRepository->markReminderAlertSent($acceptanceIncident, 0, 1, '2026-07-13 11:05:00', null, '2026-07-13 11:05:00'), 'an accepted reminder checkpoint must reject stale advancement');
+			$acceptedCallHistory = (int)$acceptanceDb->query("SELECT id FROM repeatcaller_incident_alert_history WHERE action_type = 'alert_call'")->fetchColumn();
+			assert_same(null, $acceptanceRepository->buildDeclineNotificationContext($acceptedCallHistory, $acceptanceIncident), 'late decline callbacks must not produce email context for accepted incidents');
+			$acceptanceDb->prepare('UPDATE repeatcaller_incidents SET suppression_expires_at = ? WHERE id = ?')->execute([$suppressionExpiry, $acceptanceIncident]);
+			$acceptanceRepository->updateIncidentWithCall($acceptanceIncident, '2026-07-13 11:05:00', 6);
+			$acceptanceClock->now = '2026-07-13 11:06:00';
+			$acceptanceProcessor->run(settings());
+			$acceptanceProcessor->run(settings());
+			assert_same([], $acceptanceRepository->loadAlertEligibleIncidents($acceptanceClock->now), 'accepted incidents must not become alert-eligible in any mode or suppression state');
+			assert_same($historyBefore, $acceptanceDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), 'accepted incident processing must preserve existing history without new events');
+			assert_same($stateBefore, $acceptanceRepository->loadIncidentAlertState($acceptanceIncident), 'accepted activity must not advance reminder state');
+			assert_same(1, count($acceptanceEmails->calls), 'accepted activity must not send further emails');
+			assert_same(1, count($acceptanceCalls->calls), 'accepted activity must not send further Alert Calls');
+			assert_same(6, (int)$acceptanceDb->query('SELECT matched_call_count FROM repeatcaller_incidents')->fetchColumn(), 'accepted statistics must still update');
+		}
+	}
+}
+
+$queueClock = new TestClock('2026-07-13 10:00:00');
+$queueEmails = new FakeEmailSender();
+$queueCalls = new FakeCallSender();
+[$queueDb, $queueProcessor] = create_alert_environment($queueClock, $queueEmails, $queueCalls);
+$queueRule = insert_rule($queueDb, ['email_enabled' => 1, 'alert_call_enabled' => 1, 'alert_call_destinations' => '801', 'alert_reminder_mode_override' => '5m']);
+$queueIncident = insert_incident($queueDb, ['rule_id' => $queueRule, 'subject_key' => 'queued-acceptance', 'first_matched_at' => $queueClock->now]);
+$queueRepository = new RepeatCallerRepository($queueDb);
+foreach (['email', 'alert_call'] as $actionType) {
+	foreach (['pending', 'snoozed', 'failed', 'sending', 'sent'] as $deliveryStatus) {
+		assert_true($queueRepository->reserveIncidentAlertHistory([
+			'incident_id' => $queueIncident, 'rule_id' => $queueRule, 'subject_key' => 'queued-acceptance', 'subject_label' => 'Queue acceptance',
+			'action_type' => $actionType, 'event_type' => 'initial', 'stage_n' => 0, 'recipient' => $deliveryStatus . '@example.invalid',
+			'delivery_status' => $deliveryStatus, 'successful_at' => $deliveryStatus === 'sent' ? $queueClock->now : null,
+			'next_retry_at' => $queueClock->now, 'alert_reminder_mode' => '5m', 'dedupe_key' => $actionType . '-' . $deliveryStatus,
+			'created_at' => $queueClock->now, 'updated_at' => $queueClock->now,
+		]), 'active incidents must permit notification reservation');
+	}
+}
+$alreadySent = $queueDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE delivery_status = 'sent' ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+$staleEmails = $queueRepository->loadDeliverableEmailAlerts($queueClock->now);
+assert_true($queueRepository->acceptActiveIncident($queueIncident, 'operator', '2026-07-13 10:01:00', 'gui'), 'acceptance must cancel outstanding work');
+assert_same(4, count_history($queueDb, "action_type = 'email' AND delivery_status = 'failed' AND next_retry_at IS NULL AND failure_detail = 'cancelled after incident accepted'"), 'pending, failed, snoozed and sending emails must be cancelled');
+assert_same(3, count_history($queueDb, "action_type = 'alert_call' AND failure_detail = 'cancelled after incident accepted'"), 'outstanding Alert Call attempts must retain existing cancellation behaviour');
+assert_same($alreadySent, $queueDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE delivery_status = 'sent' ORDER BY id")->fetchAll(PDO::FETCH_ASSOC), 'acceptance must not alter successfully delivered history');
+assert_same([], $queueRepository->loadDeliverableEmailAlerts('2026-07-13 10:02:00'), 'accepted incident emails must be excluded from delivery');
+foreach ($staleEmails as $staleEmail) {
+	assert_true(!$queueRepository->markEmailAlertSending((int)$staleEmail['id'], '2026-07-13 10:02:00'), 'a stale delivery snapshot must not mark an email for an accepted incident as sending');
+	$cancelledEmail = $queueDb->query('SELECT * FROM repeatcaller_incident_alert_history WHERE id = ' . (int)$staleEmail['id'])->fetch(PDO::FETCH_ASSOC);
+	$queueRepository->markEmailAlertSnoozed((int)$staleEmail['id'], '2026-07-13 10:02:00');
+	assert_same($cancelledEmail, $queueDb->query('SELECT * FROM repeatcaller_incident_alert_history WHERE id = ' . (int)$staleEmail['id'])->fetch(PDO::FETCH_ASSOC), 'a stale snooze snapshot must not revive cancelled accepted work');
+}
+$reservationMethod = new ReflectionMethod(IncidentAlertProcessor::class, 'processIncidentStage');
+$reservationMethod->setAccessible(true);
+$staleIncident = ['id' => $queueIncident, 'rule_id' => $queueRule, 'state' => 'active', 'subject_key' => 'queued-acceptance', 'subject_label' => 'Queue acceptance', 'first_matched_at' => $queueClock->now, 'email_enabled' => 1, 'email_recipients' => 'late@example.invalid'];
+$staleSummary = ['email_queued' => 0, 'alert_call_queued' => 0, 'initial_events' => 0];
+$reservationMethod->invokeArgs($queueProcessor, [$staleIncident, &$staleSummary, '2026-07-13 10:02:00']);
+assert_same(10, count_history($queueDb), 'repository reservation must reject accepted incidents even through a stale active snapshot');
+assert_true(!$queueRepository->markInitialAlertSent($queueIncident, '2026-07-13 10:02:00', null, '2026-07-13 10:02:00'), 'accepted initial checkpoints must not advance');
+$queueProcessor->run(settings());
+assert_same(0, count($queueEmails->calls) + count($queueCalls->calls), 'queued work must not be delivered after acceptance');
+
+$interleavedClock = new TestClock('2026-07-13 10:00:00');
+$interleavedEmails = new FakeEmailSender();
+[$interleavedDb, $interleavedProcessor] = create_alert_environment($interleavedClock, $interleavedEmails);
+$interleavedRule = insert_rule($interleavedDb, ['email_enabled' => 1, 'email_recipients' => 'one@example.invalid,two@example.invalid,three@example.invalid']);
+$interleavedIncident = insert_incident($interleavedDb, ['rule_id' => $interleavedRule, 'subject_key' => 'accept-during-delivery', 'first_matched_at' => $interleavedClock->now]);
+$interleavedEmails->afterSend = function () use ($interleavedDb, $interleavedIncident): void {
+	(new RepeatCallerRepository($interleavedDb))->acceptActiveIncident($interleavedIncident, 'operator', '2026-07-13 10:00:01', 'gui');
+};
+$interleavedProcessor->run(settings());
+assert_same(1, count($interleavedEmails->calls), 'acceptance during one handover must prevent the remaining loaded email deliveries');
+assert_same(1, count_history($interleavedDb, "action_type = 'email' AND delivery_status = 'sent'"), 'a completed handover must remain recorded as sent');
+assert_same(2, count_history($interleavedDb, "action_type = 'email' AND failure_detail = 'cancelled after incident accepted'"), 'remaining email recipients must be cancelled');
+
+$failedHandoverClock = new TestClock('2026-07-13 10:00:00');
+$failedHandoverEmails = new FakeEmailSender();
+$failedHandoverEmails->failuresByRecipient['alerts@example.invalid'] = 'simulated mailer failure';
+[$failedHandoverDb, $failedHandoverProcessor] = create_alert_environment($failedHandoverClock, $failedHandoverEmails);
+$failedHandoverRule = insert_rule($failedHandoverDb, ['email_enabled' => 1]);
+$failedHandoverIncident = insert_incident($failedHandoverDb, ['rule_id' => $failedHandoverRule, 'subject_key' => 'accept-during-failed-delivery', 'first_matched_at' => $failedHandoverClock->now]);
+$failedHandoverCancelled = null;
+$failedHandoverEmails->afterSend = function () use ($failedHandoverDb, $failedHandoverIncident, &$failedHandoverCancelled): void {
+	assert_same('sending', $failedHandoverDb->query("SELECT delivery_status FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetchColumn(), 'the email must be marked sending before its sender runs');
+	assert_true((new RepeatCallerRepository($failedHandoverDb))->acceptActiveIncident($failedHandoverIncident, 'operator', '2026-07-13 10:00:01', 'gui'), 'acceptance must succeed during the failed email handover');
+	$failedHandoverCancelled = $failedHandoverDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetch(PDO::FETCH_ASSOC);
+};
+$failedHandoverProcessor->run(settings());
+$failedHandoverResult = $failedHandoverDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetch(PDO::FETCH_ASSOC);
+assert_same(1, count($failedHandoverEmails->calls), 'the failed handover regression must attempt one email');
+assert_same('failed', $failedHandoverResult['delivery_status'], 'the cancelled email must retain the existing failed delivery state');
+assert_same('cancelled after incident accepted', $failedHandoverResult['failure_detail'], 'a sender failure after acceptance must not replace the cancellation detail');
+assert_same(null, $failedHandoverResult['next_retry_at'], 'a sender failure after acceptance must not restore a retry time');
+assert_same($failedHandoverCancelled, $failedHandoverResult, 'a sender failure must leave the complete acceptance cancellation record unchanged');
+assert_same([], (new RepeatCallerRepository($failedHandoverDb))->loadDeliverableEmailAlerts('2026-07-13 10:10:00'), 'the cancelled failed email must not subsequently become deliverable');
+$failedHandoverClock->now = '2026-07-13 10:10:00';
+$failedHandoverProcessor->run(settings());
+assert_same(1, count($failedHandoverEmails->calls), 'later processing must not retry the cancelled failed email');
+assert_same($failedHandoverCancelled, $failedHandoverDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetch(PDO::FETCH_ASSOC), 'later processing must preserve the acceptance cancellation record');
+
+$markSendingClock = new TestClock('2026-07-13 10:00:00');
+$markSendingEmails = new FakeEmailSender();
+[$markSendingDb, $markSendingProcessor] = create_alert_environment($markSendingClock, $markSendingEmails);
+$markSendingRule = insert_rule($markSendingDb, ['email_enabled' => 1]);
+$markSendingIncident = insert_incident($markSendingDb, ['rule_id' => $markSendingRule, 'subject_key' => 'accept-while-marking-sending', 'first_matched_at' => $markSendingClock->now]);
+$markSendingDb->exec("CREATE TRIGGER acceptance_during_mark_sending BEFORE UPDATE OF delivery_status ON repeatcaller_incident_alert_history WHEN NEW.delivery_status = 'sending' AND NEW.action_type = 'email' BEGIN UPDATE repeatcaller_incidents SET state = 'accepted' WHERE id = NEW.incident_id; END");
+$markSendingProcessor->run(settings());
+assert_same(0, count($markSendingEmails->calls), 'acceptance while an email is being marked sending must be caught by the final pre-handover state check');
+assert_same(1, count_history($markSendingDb, "action_type = 'email' AND failure_detail = 'cancelled after incident accepted'"), 'an email marked sending must be cancelled when acceptance wins before handover');
 
 $declineClock = new TestClock('2026-07-13 11:00:00');
 $declineSender = new FakeCallSender();
@@ -2879,10 +3010,10 @@ $dbCS->prepare(
 $clockCS->now = '2026-07-13 11:05:00';
 $processorCS->run(settings());
 $acceptedAfterExpiryState = $dbCS->query("SELECT last_alert_at, reminders_sent FROM repeatcaller_incident_alert_state WHERE incident_id = {$acceptedAfterExpiry}")->fetch(PDO::FETCH_ASSOC);
-assert_same('2026-07-13 11:05:00', (string)$acceptedAfterExpiryState['last_alert_at'], 'accepted incidents should advance the checkpoint once suppression has expired and fresh activity becomes alert-eligible');
-assert_same(1, (int)$acceptedAfterExpiryState['reminders_sent'], 'accepted incidents should advance the reminder counter once suppression has expired and fresh activity becomes alert-eligible');
-assert_same(1, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'gui' AND event_type = 'reminder_1' AND stage_n = 0"), 'accepted incidents should reserve one fresh GUI reminder after suppression expires');
-assert_same(1, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'email' AND event_type = 'reminder_1' AND stage_n = 0 AND delivery_status = 'sent'"), 'accepted incidents should deliver one fresh email reminder after suppression expires');
+assert_same('2026-07-13 10:01:00', (string)$acceptedAfterExpiryState['last_alert_at'], 'accepted incidents must preserve the checkpoint after suppression expiry and fresh activity');
+assert_same(0, (int)$acceptedAfterExpiryState['reminders_sent'], 'accepted incidents must preserve the reminder counter after suppression expiry and fresh activity');
+assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'gui' AND event_type = 'reminder_1' AND stage_n = 0"), 'accepted incidents must not reserve GUI reminders after suppression expires');
+assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'email' AND event_type = 'reminder_1' AND stage_n = 0 AND delivery_status = 'sent'"), 'accepted incidents must not deliver reminder emails after suppression expires');
 assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'alert_call' AND event_type = 'reminder_1' AND stage_n = 0"), 'accepted incidents should not restart Alert Call activity after suppression expires');
 assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND event_type = 'reminder_2'"), 'accepted incidents should not resume older reminder stages once suppression expires');
 

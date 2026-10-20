@@ -2074,6 +2074,83 @@ assert_true($repositoryClearWorkflow->clearSuppressedIncidentHistory((int)$secon
 	assert_same('', (string)$zeroSuppressIncident2['suppression_expires_at'], 'zero suppression: second incident must also have no suppression period');
 	assert_same(0, (int)$dbZeroSuppress->query('SELECT COUNT(*) FROM repeatcaller_incident_suppression_history WHERE rule_id = ' . $zeroSuppressRuleId)->fetchColumn(), 'zero suppression: no suppression-history rows should be created when suppression is disabled');
 
+	[$productionDb, $productionRepository] = create_runtime_environment(':memory:', '2026-10-18 10:57:31');
+	$productionClock = new InvertTestClock('2026-10-18 10:57:31');
+	$productionScanner = new CdrScanner($productionDb, $productionClock);
+	$productionRuntime = new BackgroundProcessor($productionDb, $productionRepository, $productionScanner, $productionClock);
+	$productionEmails = new FakeEmailSender();
+	$productionCalls = new FakeCallSender();
+	$productionAlerts = new IncidentAlertProcessor($productionRepository, $productionEmails, $productionClock, $productionCalls);
+	insert_route($productionDb, '18005550001', '', 'Production acceptance regression');
+	$productionRule = insert_rule($productionDb, [
+		'name' => 'Production acceptance regression', 'threshold_count' => 3, 'observation_window_minutes' => 60,
+		'suppression_minutes_override' => 0, 'alert_reminder_mode_override' => '5m',
+		'email_enabled' => 1, 'email_recipients' => 'one@example.invalid,two@example.invalid,three@example.invalid',
+		'alert_call_enabled' => 1, 'alert_call_destinations' => '801',
+		'schedules' => [['day' => -1, 'start' => '08:00', 'end' => '18:00']],
+		'created_at' => '2026-10-18 09:00:00', 'updated_at' => '2026-10-18 09:00:00',
+	]);
+	$productionTimeline = [
+		['10:55:52', '10:57:31', 1], ['11:00:39', '11:02:15', 2], ['11:04:24', '11:05:51', 3],
+		['11:49:46', '11:50:28', 4], ['11:50:58', '11:52:23', 5], ['11:57:49', '11:58:18', 5], ['11:58:05', '12:01:20', 6],
+	];
+	$productionIncident = 0;
+	foreach ($productionTimeline as $callIndex => [$callTime, $processedTime, $windowCount]) {
+		$productionClock->now = '2026-10-18 ' . $processedTime;
+		insert_cdr($productionDb, ['linkedid' => 'production-' . $callIndex, 'calldate' => '2026-10-18 ' . $callTime]);
+		$productionRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+		$productionAlerts->run(['alert_history_prune_policy' => 'never']);
+		if ($callIndex < 2) {
+			assert_same(0, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'production regression must not trigger before three calls');
+			continue;
+		}
+		$productionRow = $productionDb->query('SELECT * FROM repeatcaller_incidents ORDER BY id LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+		assert_same($windowCount, (int)$productionRow['matched_call_count'], 'production regression must preserve each rolling 60-minute count');
+		assert_same('2026-10-18 ' . $callTime, $productionRow['last_matched_at'], 'accepted tracking must retain each matching call timestamp');
+		assert_same(null, $productionRow['suppression_expires_at'], 'zero suppression must remain disabled after acceptance');
+		if ($callIndex === 2) {
+			$productionIncident = (int)$productionRow['id'];
+			$productionCallHistory = (int)$productionDb->query("SELECT id FROM repeatcaller_incident_alert_history WHERE action_type = 'alert_call'")->fetchColumn();
+			$productionAcceptance = $productionRepository->recordAlertCallDtmfResponse($productionCallHistory, $productionIncident, 'accepted', '801', '1', '2026-10-18 11:06:09');
+			assert_true(!empty($productionAcceptance['accepted']), 'production incident must be successfully accepted by telephone');
+			$productionHistory = $productionDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+			$productionAlertState = $productionRepository->loadIncidentAlertState($productionIncident);
+		} else {
+			assert_same('accepted', $productionRow['state'], 'the continuous episode must retain the accepted incident');
+			assert_same('alert-call:801', $productionRow['accepted_by'], 'continued activity must preserve telephone attribution');
+			assert_same('2026-10-18 11:06:09', $productionRow['accepted_at'], 'continued activity must preserve the acceptance timestamp');
+			assert_same('alert_call', $productionRow['accept_source'], 'continued activity must preserve the acceptance source');
+			$productionAlerts->run(['alert_history_prune_policy' => 'never']);
+			assert_same($productionHistory, $productionDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), 'accepted production activity must not add or alter notifications');
+			assert_same($productionAlertState, $productionRepository->loadIncidentAlertState($productionIncident), 'accepted production activity must not advance reminders');
+		}
+	}
+	assert_same(1, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'the production sequence must remain one continuous incident');
+	assert_same(7, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_seen_calls')->fetchColumn(), 'all seven production journeys must remain tracked');
+	assert_same(0, (int)$productionDb->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE event_type LIKE 'reminder_%'")->fetchColumn(), 'production acceptance must prevent all later reminder events');
+	assert_same(1, (int)$productionDb->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE action_type = 'gui' AND event_type = 'initial'")->fetchColumn(), 'the production sequence must retain its single initial GUI event');
+	assert_same(3, count($productionEmails->calls), 'production sequence must deliver only the three initial recipient emails');
+	assert_same(1, count($productionCalls->calls), 'production sequence must initiate only the initial Alert Call');
+	$productionSubject = $productionRepository->loadSubjectState($productionRule, $productionRow['subject_key']);
+	assert_same(1, (int)$productionSubject['threshold_met'], 'the production episode must not spuriously clear or rearm');
+	assert_same($productionIncident, (int)$productionSubject['active_incident_id'], 'accepted incident must remain tracked for statistical updates');
+	foreach (['13:10:00', '13:12:00', '13:14:00'] as $rearmIndex => $callTime) {
+		$productionClock->now = '2026-10-18 ' . $callTime;
+		insert_cdr($productionDb, ['linkedid' => 'production-rearm-' . $rearmIndex, 'calldate' => $productionClock->now]);
+		$productionRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+		$productionAlerts->run(['alert_history_prune_policy' => 'never']);
+		if ($rearmIndex === 0) {
+			assert_same('closed', $productionDb->query('SELECT state FROM repeatcaller_incidents WHERE id = ' . $productionIncident)->fetchColumn(), 'observed clearing must close the accepted incident');
+		}
+	}
+	$productionFreshIncident = (int)$productionDb->query('SELECT MAX(id) FROM repeatcaller_incidents')->fetchColumn();
+	assert_true($productionFreshIncident !== $productionIncident, 'a new qualifying episode must have a new incident ID');
+	assert_same(2, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'rearming with zero suppression must permit the new incident');
+	assert_same(5, (int)$productionDb->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE incident_id = {$productionFreshIncident} AND event_type = 'initial'")->fetchColumn(), 'the fresh incident must generate its own GUI, three emails and Alert Call');
+	assert_same(6, count($productionEmails->calls), 'the new episode must deliver a fresh set of initial emails');
+	assert_same(2, count($productionCalls->calls), 'the new episode must initiate its own Alert Call');
+	assert_same($productionHistory, $productionDb->query('SELECT * FROM repeatcaller_incident_alert_history WHERE incident_id = ' . $productionIncident . ' ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), 'closure and a new episode must not alter accepted incident notification history');
+
 	$dbPath4 = tempnam(sys_get_temp_dir(), 'repeatcaller_runtime_');
 	if ($dbPath4 === false) {
 		throw new RuntimeException('Unable to create fourth runtime contract SQLite file');

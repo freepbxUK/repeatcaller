@@ -409,6 +409,15 @@ a separate event: if suppression has not yet expired it is blocked and recorded
 in Suppressed Incidents; if suppression has already expired the new episode
 creates a new incident and follows the normal alert process.
 
+The same notification-stopping behaviour applies to telephone acceptance.
+No later GUI, email, or Alert Call reminder is generated for the accepted
+incident, even with suppression set to 0 or after suppression expires.
+Outstanding email attempts are marked failed with the detail
+`cancelled after incident accepted`; delivered history is retained. Work is
+rechecked before delivery, but a message already handed to the mailer cannot
+be recalled. Acceptance does not block initial alerts for a new incident after
+observed clearing and rearming.
+
 Accepted incidents appear in Suppressed Incidents only when a fresh qualifying
 attempt is blocked during still-active suppression after the monitor has first
 observed a clear in the previous threshold condition.
