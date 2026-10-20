@@ -1,42 +1,21 @@
 # Repeat Caller 1.1.0 for FreePBX 16 and 17
 
-**Release date:** Not yet released
+Repeat Caller turns qualifying inbound call activity into actionable incidents
+on FreePBX/PBXact. Repeat mode detects when the same caller reaches a configured
+threshold; Invert mode detects when fewer than the expected number of matching
+calls occur. Incidents can be reviewed in the GUI and can trigger optional
+email and Alert Call notifications.
 
-## Current Development: 1.1.0
+## Release Status
 
-Repeat Caller 1.1.0 folds in the FreePBX UK signed-release preparation work
-alongside a new per-rule Test Email action:
-
-* Moves publisher, repository, licence, and module metadata to FreePBX UK.
-* Preserves explicitly configured display names from FreePBX's Email "From:"
-  Address and supports FreePBX 17 HTML-encoded sender identities while
-  retaining strict email-address and header-injection validation.
-* Uses the configured FreePBX dashboard brand for a bare sender address, with
-  `Repeat Caller` as the final display-name fallback.
-* Corrects the FreePBX 16 and 17 module metadata declarations.
-* Corrects the redundant Alert History `accepted` JavaScript condition without
-  changing its behaviour.
-* Improves the inbound-route editor so Select DIDs supports mutually exclusive
-  all-routes-minus-exclusions or exact-include sets, including immediate
-  first-route selection, and migrates legacy All-DIDs exclusions without
-  changing effective matching.
-* Adds a per-rule Test Email action so administrators can send a test message
-  to a rule's existing saved recipients, using the same email transport,
-  resolved From identity, and FreePBX System Identifier as real alert emails.
-  No global email recipient setting is introduced.
-* Adds regression coverage for sender identity parsing, email delivery,
-  recipient compatibility, release metadata, the Alert History condition, and
-  Test Email behaviour.
-* Replaces cumulative incident/history table loading with independent
-  25-record server-side pagination, database sorting, and persistent per-table
-  sort preferences; Rules and Schedule table behaviour is unchanged.
-
-## Signed Release
-
-Repeat Caller 1.1.0 will be the first signed FreePBX UK release of the module.
-Releases are signed with the author's developer GPG key, which is signed by the
-FreePBX Module Signing v2 master key, allowing FreePBX to verify module
+Repeat Caller 1.1.0 is the first signed FreePBX UK release. It is signed with
+the author's developer GPG key, which is certified by the FreePBX Module
+Signing v2 master key. FreePBX uses this certification to verify the module's
 authenticity and integrity.
+
+The official project repository is
+[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller). Use its
+`main` branch for the stable release.
 
 ## Introduction
 
@@ -68,11 +47,10 @@ Use with FreePBX/PBXact 16 or 17.
 - PHP 7.4+
 - MariaDB 5.5-compatible schema (utf8/InnoDB key-size compatible)
 
-### Development release compatibility
+### Upgrade compatibility
 
-Repeat Caller 1.0.0 was a development release and should not be used as an
-upgrade source for later releases. Upgrade compatibility guarantees begin with
-the first stable release.
+Repeat Caller 1.0.0 is not a supported upgrade source for later releases.
+Upgrade compatibility guarantees begin with the first stable release.
 
 ## Requirements
 
@@ -93,7 +71,9 @@ the first stable release.
 ## Installing
 
 Repeat Caller is a community module and is not currently listed in the
-FreePBX online module repository.
+FreePBX online module repository. Install the signed release files from the
+official FreePBX UK project repository or from a trusted pre-staged module
+directory.
 
 Do not use:
 
@@ -107,9 +87,10 @@ For each method, ensure module files are present at
 commands. The fwconsole commands intentionally run from a neutral directory
 (`cd ~`).
 
-Option 1: Install from pre-staged module files
+### Option 1: Install signed or pre-staged release files
 
-Place the module files in `/var/www/html/admin/modules/repeatcaller/`, then:
+Download the signed 1.1.0 module files, or place a trusted pre-staged copy, in
+`/var/www/html/admin/modules/repeatcaller/`, then run:
 
 ```sh
 cd ~
@@ -118,7 +99,7 @@ fwconsole chown
 fwconsole reload
 ```
 
-Option 2: Install from GitHub
+### Option 2: Install from GitHub
 
 Git commands require the modules/repository directory context. After cloning,
 switch back to a neutral directory before running fwconsole commands.
@@ -163,7 +144,7 @@ fwconsole chown
 fwconsole reload
 ```
 
-Option 3: Install from a local copy
+### Option 3: Install from a local copy
 
 Copy or symlink a local `repeatcaller` directory into
 `/var/www/html/admin/modules/repeatcaller/`, then run the fwconsole commands
@@ -183,6 +164,8 @@ The module appears under Reports > Repeat Caller.
 Do not uninstall during an update. Uninstall removes Repeat Caller tables,
 rules, settings, incidents, alert state, alert history, suppression history,
 the managed alert dialplan fragment/include, and the deployed AGI script.
+Uninstalling therefore deletes stored module data; use an update operation
+instead.
 
 Check version before and after updating:
 
@@ -191,7 +174,7 @@ fwconsole ma list | grep -i repeatcaller
 grep "<version>" /var/www/html/admin/modules/repeatcaller/module.xml
 ```
 
-Option 1: Update from pre-staged module files
+### Option 1: Update from signed release files or a pre-staged module directory
 
 Replace the module files in `/var/www/html/admin/modules/repeatcaller/`, then
 run the fwconsole commands from a neutral directory:
@@ -203,27 +186,38 @@ fwconsole chown
 fwconsole reload
 ```
 
-Option 2: Update from GitHub
+### Option 2: Update from GitHub
 
-After the first installation, fwconsole chown may cause Git to reject the module directory because it is owned by the FreePBX web user rather than root. Add the directory to Git's safe-directory list once:
+After the first installation, `fwconsole chown` may cause Git to reject the
+module directory when it is owned by the FreePBX web user rather than root.
+Run the Git commands as the same administrative account used to update the
+module, and add the directory to that account's safe-directory list once:
 
 ```sh
-git config --global --add safe.directory /var/www/html/admin/modules/repeatcaller
+git config --global --get-all safe.directory | grep -Fxq '/var/www/html/admin/modules/repeatcaller' \
+  || git config --global --add safe.directory /var/www/html/admin/modules/repeatcaller
 ```
 
-Then update the module:
+Check for local changes before updating. Do not discard local changes without
+reviewing or backing them up. Then update:
 
 ```sh
 cd /var/www/html/admin/modules/repeatcaller
-git fetch origin main
-git reset --hard FETCH_HEAD
+git status --short --branch
+git fetch origin
+git reset --hard origin/main
 cd ~
 fwconsole ma install repeatcaller
 fwconsole chown
 fwconsole reload
 ```
 
-Option 3: Update from a local copy
+Only run Git update commands when the installed module directory is a Git
+checkout. Check for local changes before updating and back them up if needed;
+the hard reset above discards local modifications and commits not present on
+`origin/main`.
+
+### Option 3: Update from a local copy
 
 Re-copy or re-link your local `repeatcaller` directory into
 `/var/www/html/admin/modules/repeatcaller/`, then run the fwconsole commands
@@ -239,6 +233,222 @@ fwconsole reload
 After updating, open Reports > Repeat Caller and confirm rules, settings,
 active/recent incidents, alert history, and suppression history are still
 present.
+
+### Verify the update
+
+After any update, check both the FreePBX module listing and the installed
+module metadata:
+
+```sh
+fwconsole ma list | grep -i repeatcaller
+grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
+```
+
+If either command does not report the expected version, the module has not
+updated successfully. Correct the update source or module directory first,
+then rerun the update before troubleshooting signing or signature verification.
+
+### If the GitHub update did not complete
+
+If the `module.xml` command still reports an older version, the source update
+did not complete. An unusual dirty or local Git working-directory condition,
+such as a local file named `FETCH_HEAD`, can make `git reset --hard FETCH_HEAD`
+ambiguous. Use an explicit remote branch reference such as
+`git reset --hard origin/main` instead.
+
+Before any hard reset, inspect the checkout and back up any local changes you
+need. A hard reset discards uncommitted changes and local commits not present
+on the selected remote branch.
+
+Use Git commands only when `/var/www/html/admin/modules/repeatcaller/` is a Git
+checkout containing a `.git` directory. These commands do not apply to an
+installation made from unpacked module files. Rerun the documented update:
+
+```sh
+cd /var/www/html/admin/modules/repeatcaller
+git status --short --branch
+git fetch origin
+git reset --hard origin/main
+cd ~
+fwconsole ma install repeatcaller
+fwconsole chown
+fwconsole reload
+```
+
+Then verify the version again. Do not proceed to signature troubleshooting
+until `module.xml` reports the expected release version.
+
+#### `git fetch origin` cannot find a remote branch
+
+If `git fetch origin` fails with `fatal: Couldn't find remote ref
+refs/heads/...`, an older local checkout may have `remote.origin.fetch` pinned
+to an obsolete development branch that no longer exists. This is a local Git
+checkout configuration condition.
+
+Inspect the configured refspecs with:
+
+```sh
+cd /var/www/html/admin/modules/repeatcaller
+git config --get-all remote.origin.fetch
+```
+
+A normal Repeat Caller checkout fetches all remote branches using:
+
+```text
++refs/heads/*:refs/remotes/origin/*
+```
+
+If the fetch configuration points to an obsolete branch, restore the normal
+fetch configuration and fetch remote branches again:
+
+```sh
+cd /var/www/html/admin/modules/repeatcaller
+git status --short --branch
+git remote set-url origin https://github.com/freepbxUK/repeatcaller.git
+git config --unset-all remote.origin.fetch
+git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git fetch --prune origin
+git branch -r
+```
+
+Confirm that `origin/main` is present. Check for local changes and back them up
+before the hard reset; the reset below discards local modifications and
+commits not reachable from `origin/main`.
+
+```sh
+cd /var/www/html/admin/modules/repeatcaller
+git reset --hard origin/main
+cd ~
+fwconsole ma install repeatcaller
+fwconsole chown
+fwconsole reload
+```
+
+If `git fetch origin` fails, fix the Git checkout before running
+`fwconsole ma install`; otherwise, FreePBX will install whatever older module
+files are already on disk. Verify the installed version again:
+
+```sh
+fwconsole ma list | grep -i repeatcaller
+grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
+```
+
+### Signature warnings after updating an older unsigned release
+
+Some existing installations upgraded from an older unsigned Repeat Caller
+release may initially show a signature warning after upgrading to signed
+Repeat Caller 1.1.0. This is advisory troubleshooting guidance and does not
+mean the issue has been reproduced with Repeat Caller.
+
+First confirm that the signed release files were actually installed. Check the
+FreePBX module listing, the installed `module.xml`, and the signature file:
+
+```sh
+fwconsole ma list | grep -i repeatcaller
+grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
+ls -l /var/www/html/admin/modules/repeatcaller/module.sig
+```
+
+If the version is not `1.1.0`, this is an update problem rather than a
+signature problem. Resolve the source update before continuing. Confirm that
+the installed files match the signed release, not just that a `module.sig`
+file exists.
+
+Once the correct signed files and version are installed, first try:
+
+```sh
+fwconsole ma refreshsignatures
+fwconsole chown
+fwconsole reload
+```
+
+Then recheck Module Admin. If it still says unsigned, continue with the
+`Module is Unsigned` procedure below.
+
+#### Module is Unsigned
+
+If the correct Repeat Caller 1.1.0 files are installed but Module Admin still
+reports the module as unsigned after the signature refresh, repeat the version,
+metadata, and signature-file checks above. If the installed version is not
+`1.1.0` or the correct signed files are not present, return to the update
+troubleshooting above. Do not troubleshoot signatures until the correct files
+are installed.
+
+#### Signed by unknown or untrusted key
+
+A correctly signed module can still be reported as signed by an unknown or
+untrusted key if the Asterisk GnuPG keyring lacks the certification needed to
+trust the developer key. The developer's public signing key signs the module.
+The FreePBX Module Signing v2 master key certifies the developer's public key.
+That certification may be absent from the local Asterisk GnuPG keyring even
+when the developer public key itself is already present.
+
+The Repeat Caller developer key is the same key used for Registration Watch.
+Check its signatures in the Asterisk keyring:
+
+```sh
+sudo -u asterisk gpg \
+  --homedir /home/asterisk/.gnupg \
+  --check-sigs DD6DC4210FD028092D4981A56079D3C0D58322EE
+```
+
+If the FreePBX Module Signing v2 master-key certification is missing, preserve
+third-party signatures when importing the developer public key:
+
+```sh
+grep -qxF 'keyserver-options no-self-sigs-only,no-import-clean' /home/asterisk/.gnupg/gpg.conf \
+  || echo 'keyserver-options no-self-sigs-only,no-import-clean' >> /home/asterisk/.gnupg/gpg.conf
+```
+
+If `/home/asterisk/.gnupg/gpg.conf` does not already exist, `grep` may display:
+
+```text
+grep: /home/asterisk/.gnupg/gpg.conf: No such file or directory
+```
+
+This is harmless and expected on systems without an existing GnuPG
+configuration file. The subsequent `echo` command automatically creates the
+file with the required setting. No additional action is necessary.
+
+Continue with the import and check the signatures again:
+
+```sh
+chown asterisk:asterisk /home/asterisk/.gnupg/gpg.conf
+
+curl -s "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x6079D3C0D58322EE" \
+  | sudo -u asterisk gpg --homedir /home/asterisk/.gnupg --import
+
+sudo -u asterisk gpg \
+  --homedir /home/asterisk/.gnupg \
+  --check-sigs DD6DC4210FD028092D4981A56079D3C0D58322EE
+```
+
+The second signature check should show the FreePBX Module Signing v2 master-key
+certification, identified by `1588A7366BD35B34`. This procedure is advisory
+troubleshooting guidance for affected existing installations, not a normal
+installation step.
+
+After confirming the certification, refresh signatures and verify the result
+in Module Admin:
+
+```sh
+fwconsole ma refreshsignatures
+fwconsole chown
+fwconsole reload
+```
+
+Troubleshooting order:
+
+1. Verify the installed module version and `module.xml`.
+2. If the version is old, resolve the incomplete source update.
+3. If `git fetch origin` fails because an obsolete remote branch is configured,
+   restore the normal fetch configuration, fetch branches again, and confirm
+   that `origin/main` exists and contains the expected release.
+4. Only after the correct signed files are installed, investigate an unsigned
+   status and refresh FreePBX's module signatures.
+5. If the module is signed but reported as unknown or untrusted, check the
+   developer-key signatures and confirm the master-key certification.
+6. Refresh signatures and verify the final status in Module Admin.
 
 ## Background Processing
 
@@ -362,7 +572,7 @@ Matching can include:
 Subject identity is tracked per rule and matched caller/route context so the
 same rule can independently track separate journeys.
 
-Incident lifecycle behavior includes:
+Incident lifecycle behaviour includes:
 
 - creating incidents only when rule conditions are met
 - updating matched call counts/timestamps on existing tracked incidents
@@ -476,7 +686,7 @@ structure. Queue quantity and voicemail prompts are not used.
 
 Spanish and German currently use the coherent whole-message English fallback
 because their standard inventories do not provide a straightforward complete
-mapping for all required summary and terminal behavior without misleading
+mapping for all required summary and terminal behaviour without misleading
 semantics or omitted information.
 
 Repeat Caller never substitutes native words piecemeal and does not ship or
@@ -591,7 +801,7 @@ enabled. Saving with it checked persists a blank Caller ID and forgets the
 prior value. Caller presentation may still be managed elsewhere by routing,
 trunks, or providers.
 
-DTMF behavior during Alert Call:
+DTMF behaviour during Alert Call:
 
 - Press 1: accepts the incident (Alert Call acceptance source)
 - Press 2: declines that Alert Call attempt
@@ -758,7 +968,7 @@ Reports > Repeat Caller includes these main sections:
   persistent sorting preferences. Rules and Schedule retain their existing
   row-batching behaviour.
 
-UI refresh behavior uses AJAX command allowlisting and section change tokens so
+UI refresh behaviour uses AJAX command allowlisting and section change tokens so
 only changed sections refresh. Tables remain in local responsive wrappers with
 horizontal scroll where needed.
 
@@ -771,7 +981,7 @@ destinations, caller ID, recordings, and outbound routing remain governed by
 the PBX configuration. Repeat Caller does not replace FreePBX outbound routes
 or impose an alternative dialling policy. The PBX administrator remains
 responsible for ensuring configured destinations, caller presentation, and
-routing behavior are appropriate for the deployment.
+routing behaviour is appropriate for the deployment.
 
 ### Domain-focused Components
 
@@ -857,7 +1067,7 @@ Recordings, and administrator-controlled routing.
 - Alert Call delivery depends on AMI availability, dialplan deployment,
   playback assets, and destination reachability.
 - Alert Call unanswered timeout is fixed at 30000 ms; this is
-  intentional for bounded escalation behavior but may be shorter than some
+  intentional for bounded escalation behaviour but may be shorter than some
   downstream destination timing policies.
 - Email delivery depends on FreePBX mail configuration and downstream relays.
 - Snooze is global rather than per rule/incident.
@@ -867,9 +1077,39 @@ Future release consideration:
 
 - A configurable Alert Call ring timeout is being evaluated for a future minor
   release so administrators can better align escalation timing with downstream
-  routing policy while preserving bounded fail-safe behavior.
+  routing policy while preserving bounded fail-safe behaviour.
 
 ## Release History
+
+### 1.1.0, first signed FreePBX UK release
+
+- First signed FreePBX UK release, published from the official
+  `freepbxUK/repeatcaller` repository.
+- Updates publisher, licence, project metadata, and release presentation for
+  FreePBX UK.
+- Preserves explicitly configured display names in FreePBX Email "From:"
+  Address values, including HTML-encoded identities on FreePBX 17. Bare
+  addresses use the configured FreePBX dashboard brand, with `Repeat Caller`
+  as the final fallback, while retaining address and header-injection
+  validation.
+- Corrects FreePBX 16 and 17 compatibility declarations in module metadata.
+- Improves Select DIDs route selection, mutual exclusion between include and
+  exclude lists, and compatibility with legacy All-DIDs exclusions without
+  changing their effective matching.
+- Adds a per-rule Test Email action using the rule's saved recipients, the
+  production email transport and resolved From identity, and the configured
+  FreePBX System Identifier. It does not add a global recipient setting.
+- Removes a redundant Alert History accepted-state JavaScript condition
+  without changing behaviour.
+- Adds independent 25-record server-side pagination for Active Incidents,
+  Recent Incidents, Suppressed Incidents, and Alert History. Sorting is applied
+  across the database result set, and each table's sorting preference is
+  persisted independently in the database.
+- Preserves the existing 15-row Rules and Schedule batching behaviour,
+  including keeping each Rules row with its explainer row.
+- Expands regression coverage for pagination beyond 300 records, full-dataset
+  sorting, preference persistence and races, suppression filtering, email
+  identity and delivery, route selection, Test Email, and FreePBX compatibility.
 
 ### 1.0.2, patch release, 24 August 2026
 
@@ -878,7 +1118,7 @@ Future release consideration:
 - Adds a concise native French Alert Call profile using standard installed
   prompts without incorrect queue quantity or voicemail substitutions.
 - Uses native non-English Alert Call audio only where installed standard
-  Asterisk and FreePBX prompts reproduce the complete established behavior.
+  Asterisk and FreePBX prompts reproduce the complete established behaviour.
 - Uses one coherent English generated-message fallback for incomplete language
   profiles, without module-owned translated recordings or mixed-language audio.
 - Prevents mixed-language generated Alert Call audio by using a coherent
@@ -921,7 +1161,7 @@ Future release consideration:
 - Alert Call destination changes now keep the associated Ignore these callers
   entry consistent without creating duplicate destinations.
 - Alert Call self-trigger warnings now remain visible for approximately
-  6 seconds without changing global FreePBX toast behavior.
+  6 seconds without changing global FreePBX toast behaviour.
 - Run Now now initializes from the current bootstrap state so initial
   availability is shown correctly on load.
 
@@ -1061,6 +1301,35 @@ fwconsole reload
 
 GPLv3+. See LICENSE.
 
+## Support and Feedback
+
+Repeat Caller is maintained by FreePBX UK. For installation
+help, configuration questions, or troubleshooting, contact
+[FreePBX UK Support](https://freepbx.uk/support/).
+
+The source repository and public issue tracker are
+[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller).
+
+When requesting support or reporting a problem, include relevant information:
+
+- FreePBX/PBXact, PHP, and Asterisk versions.
+- Repeat Caller version and installation source (signed release files,
+  unpacked module files, or Git checkout).
+- The output of `fwconsole ma list | grep -i repeatcaller`.
+- The steps needed to reproduce the issue, expected behaviour, and actual
+  behaviour.
+- Relevant Repeat Caller Alert History status or sanitised log excerpts.
+
+Remove telephone numbers, caller details, email addresses, credentials,
+customer data, and other personal or sensitive information unless it is
+necessary and safe to share. Never include passwords, SIP secrets, API
+credentials, private keys, or complete unredacted call records.
+
+For suspected security vulnerabilities, do not post exploit details or
+vulnerability reports to the public issue tracker. Contact FreePBX UK through
+its support channel and request private security handling. Include only the
+minimum sanitised information needed to assess the report.
+
 ## AI-Assisted Contributions and Disclosure
 
 This module has been developed with AI assistance for code generation, review, testing, and documentation. From 26 August 2026, generative AI assistance must be disclosed in every commit containing AI-assisted changes:
@@ -1069,9 +1338,15 @@ This module has been developed with AI assistance for code generation, review, t
 Assisted-by: AGENT_NAME:MODEL_VERSION
 ```
 
-For example: `Assisted-by: GitHub-Copilot:gpt-5.6-sol`
+The 1.1.0 pagination work was assisted by GitHub Copilot GPT-6 Luna. Record
+that assistance using the established trailer:
 
-The human contributor remains solely responsible for the contribution. AI tools must not be listed as co-authors.
+```text
+Assisted-by: GitHub-Copilot:gpt-6-luna
+```
+
+The human contributor remains solely responsible for the contribution. AI
+tools must not be listed as co-authors.
 
 ## Author
 

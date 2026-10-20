@@ -16,6 +16,7 @@ It does not only count missed calls. Answered, busy, failed, abandoned, and othe
 Before configuring rules, confirm:
 
 - the module is installed
+- the installed module version is listed in [README.md](README.md)
 - the Repeat Caller background job is present
 - CDR records are available
 - Inbound Routes are configured
@@ -444,7 +445,7 @@ Operational notes:
 - The selected System Recording language takes priority over the global Sound Languages setting and remains independent of the generated summary language.
 - Multilingual summaries use installed standard Asterisk and FreePBX sounds only. Caller and DID values use Asterisk `SAY DIGITS`; counts and observation windows use `SAY NUMBER`.
 - French is an officially supported native profile with an approved adapted prompt mapping for its standard prompt vocabulary. Repeat alerts speak `conf-thereare`, count, optional DDI, observation window, and caller information; Invert alerts use `queue-less-than` and the threshold with the same essential details. Queue quantity and voicemail count prompts are not used.
-- Spanish and German use the entire established English generated message because their standard inventories do not provide a straightforward complete mapping for all required behavior. Repeat Caller does not ship or require translated recordings.
+- Spanish and German use the entire established English generated message because their standard inventories do not provide a straightforward complete mapping for all required behaviour. Repeat Caller does not ship or require translated recordings.
 - The Alert Call Language table in Global Settings gives administrators visibility of language availability, resolved playback language, and sample playback capability. The active row is highlighted.
 - **Language:** Friendly language name.
 - **Locale:** Raw Asterisk/FreePBX locale identifier.
@@ -546,7 +547,7 @@ flow.
 Future improvement under consideration:
 
 - A configurable Alert Call ring timeout may be introduced in a future minor
-	release so administrators can tune this behavior to their routing policy
+	release so administrators can tune this behaviour to their routing policy
 	while retaining bounded fail-safe protection.
 
 ## Snooze Monitoring
@@ -706,4 +707,9 @@ Check:
 
 - [README.md](README.md)
 - [TESTING.md](TESTING.md)
-- GitHub Issues: https://github.com/freepbxUK/repeatcaller/issues
+- [FreePBX UK Support](https://freepbx.uk/support/)
+- [Source and issue tracker](https://github.com/freepbxUK/repeatcaller/issues)
+
+For suspected security vulnerabilities, do not post details publicly; contact
+FreePBX UK Support and request private handling. Do not include credentials or
+unredacted customer call information in support requests.

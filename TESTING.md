@@ -5,10 +5,12 @@ with MySQL/MariaDB.
 
 ## Fresh Install
 
-1. Install the module with:
+1. Stage the signed release files in
+   `/var/www/html/admin/modules/repeatcaller/`. Then install the staged module
+   from a neutral directory:
 
 ```bash
-cd /var/www/html/admin/modules/repeatcaller
+cd ~
 fwconsole ma install repeatcaller
 fwconsole chown
 fwconsole reload
@@ -68,23 +70,6 @@ Expected v1 fresh-install tables include:
 	pagination. Confirm Rules and Schedule retain their existing row-batching
 	behaviour.
 
-For a development checkout already staged at
-`/var/www/html/admin/modules/repeatcaller/`, test the unsigned branch with:
-
-```bash
-cd /var/www/html/admin/modules/repeatcaller
-git fetch origin
-git switch 1-1-0_Dev
-git pull --ff-only
-cd ~
-fwconsole ma install repeatcaller
-fwconsole chown
-fwconsole reload
-```
-
-Do not enable rule ID 1 or alter the existing `RC-PAGE-FIXTURE-20261015:`
-production records during manual testing.
-
 ## Runtime
 
 10. Trigger matching inbound calls and confirm incident creation.
@@ -112,7 +97,7 @@ production records during manual testing.
 
 ## Alert Call contract coverage
 
-23. Run the focused documentation and behavior contracts:
+23. Run the focused documentation and behaviour contracts:
 
 ```bash
 cd /workspaces/repeatcaller
@@ -203,7 +188,7 @@ Multilingual Alert Call checks:
 - Confirm installed Spanish or German files show `Rejected → Fallback` and no
 	developer language override is exposed to admins.
 - Confirm active supported and unsupported languages show their native or exact
-	English fallback behavior, installed unsupported languages remain visible,
+	English fallback behaviour, installed unsupported languages remain visible,
 	no rule language selector exists, and generated language follows the active
 	FreePBX language.
 - Remove one required English prompt and confirm Alert Call activation is
@@ -215,7 +200,7 @@ Multilingual Alert Call checks:
 	Confirm `en`, `en_GB`, `en_AU`, and `en_NZ` are selected only when that exact
 	directory exists and contains the complete required English prompt inventory.
 - Confirm `en`, `en_GB`, `en_AU`, and `en_NZ` retain the established English
-	playback, retry, acceptance, decline, timeout, and accepted-elsewhere behavior.
+	playback, retry, acceptance, decline, timeout, and accepted-elsewhere behaviour.
 
 Timeout and stage-timing checks:
 
@@ -228,16 +213,28 @@ Timeout and stage-timing checks:
 
 ## Upgrade and Preservation
 
-39. Run the supported update sequence:
+39. On a FreePBX test system, update an installation from the official
+repository's existing Git checkout. Do not run Git commands against an
+installation that is not a Git checkout. Check for local changes and back
+them up before the hard reset; it discards local modifications and commits
+that are not on `origin/main`:
 
 ```bash
+git config --global --get-all safe.directory | grep -Fxq '/var/www/html/admin/modules/repeatcaller' \
+	|| git config --global --add safe.directory /var/www/html/admin/modules/repeatcaller
 cd /var/www/html/admin/modules/repeatcaller
-git fetch origin main
-git reset --hard FETCH_HEAD
+git status --short --branch
+git fetch origin
+git reset --hard origin/main
+cd ~
 fwconsole ma install repeatcaller
 fwconsole chown
 fwconsole reload
+fwconsole ma list | grep -i repeatcaller
+grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 ```
+Confirm both version checks report the expected version before testing
+signature state.
 40. Confirm rules, incidents, and history remain intact.
 41. Review uninstall warning and cleanup expectations before removal.
 
