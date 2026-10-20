@@ -214,7 +214,7 @@ assert_true(strpos($viewSource, 'Selected DIDs only') === false, 'rule editor sh
 $readmeSource = file_get_contents($root . '/README.md');
 assert_true($readmeSource !== false, 'README should be readable');
 assert_true(strpos($readmeSource, '# Repeat Caller 1.1.1 for FreePBX 16 and 17') !== false, 'README title should declare 1.1.1');
-assert_true(strpos($readmeSource, '### 1.1.1, patch release') !== false, 'README should include the 1.1.1 patch release history');
+assert_true(strpos($readmeSource, '### 1.1.1, patch release, 20 October 2026') !== false, 'README should include the dated 1.1.1 patch release history');
 assert_true(strpos($readmeSource, 'No caller number is generated or') !== false && strpos($readmeSource, 'Forwarding and SIP redirects require live validation.') !== false, 'README should describe number preservation without claiming simulated forwarding isolation');
 assert_true(strpos($readmeSource, 'Only `CONNECTEDLINE(name,i)` is set') !== false && strpos($readmeSource, 'FreePBX `DEVICE` technology and exact SIP/PJSIP dial string') !== false, 'README should describe the corrected device guard and connected-line-only assignment');
 assert_true(strpos($readmeSource, 'Repeat Caller 1.1.0 was the first signed FreePBX UK release.') !== false, 'README should present 1.1.0 as the first signed FreePBX UK release');
@@ -252,7 +252,7 @@ assert_true(strpos($readmeSource, 'Adds independent 25-record server-side pagina
 assert_true((bool)preg_match('/sorting preference is\\s+persisted independently/', $readmeSource), 'README release history should document per-table sorting preferences');
 assert_true(strpos($readmeSource, 'persisted independently in the database') !== false, 'README should state that sorting preferences are database-persisted');
 assert_true(strpos($readmeSource, 'Preserves the existing 15-row Rules and Schedule batching behaviour') !== false, 'README release history should state that unrelated Rules and Schedule batching is preserved');
-assert_true(strpos($readmeSource, '### 1.1.0, first signed FreePBX UK release') !== false, 'README release history should include the signed 1.1.0 entry');
+assert_true(strpos($readmeSource, '### 1.1.0, first signed FreePBX UK release, 20 October 2026') !== false, 'README release history should include the dated signed 1.1.0 entry');
 assert_true(strpos($readmeSource, '### 1.0.2, patch release, 24 August 2026') !== false, 'README should include the 1.0.2 release history heading');
 assert_true(strpos($readmeSource, 'resolved playback languages, and clear original, adapted, or fallback status') !== false, 'README release history should document the Alert Call language status categories');
 assert_true(strpos($readmeSource, 'acceptance scenarios using the same prompt resolution as live Alert Calls') !== false, 'README release history should document Alert Call language sample playback');

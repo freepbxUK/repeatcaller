@@ -1109,7 +1109,7 @@ Future release consideration:
 
 ## Release History
 
-### 1.1.1, patch release
+### 1.1.1, patch release, 20 October 2026
 
 - Sets the local outgoing connected-line name to `Repeat Caller` on marked
   SIP/PJSIP Alert Call channels matching a genuine FreePBX device's technology
@@ -1120,7 +1120,7 @@ Future release consideration:
   mixed, custom, unmarked, and privacy-state channel snapshots. Forwarding,
   redirects, and actual SIP presentation remain live PBX test requirements.
 
-### 1.1.0, first signed FreePBX UK release
+### 1.1.0, minor release, 20 October 2026
 
 - First signed FreePBX UK release, published from the official
   `freepbxUK/repeatcaller` repository.
