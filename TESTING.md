@@ -135,6 +135,38 @@ prove every real database/transport race. Suppression-setting reconciliation
 is outside this correction: its separate accepted-to-active reactivation issue
 can undermine state-based notification eligibility and must be tested separately.
 
+## 1.1.1 BMO Alert Call Dialplan
+
+Repeat Caller must own zero custom Asterisk `.conf` files. After module upgrade
+and reload, inspect the launch, playback, summary, and caller-name contexts in
+FreePBX-generated `extensions_additional.conf`; fresh installs must not create
+`repeatcaller_alert.conf` or add a managed include to `extensions_custom.conf`.
+The install contract pins all 86 legacy context/extension/label/application
+instructions to their pre-migration digest, including DTMF and hangup paths.
+
+Upgrade and uninstall share selective legacy cleanup, which is entered only
+when the old module-owned `repeatcaller_alert.conf` fragment exists. Without
+that fragment, `extensions_custom.conf` is not read, created, or modified, and
+any includes or lookalike references in it are left untouched. With the
+fragment present, test a complete managed
+block before/after unrelated dialplan, LF and CRLF files, no final newline,
+duplicate blocks, an otherwise empty file, a missing administrator file, and
+partial/lookalike/unmanaged includes. Only complete exact managed blocks may
+be removed from the administrator file. If an active unmanaged `#include` or
+`#tryinclude` of `repeatcaller_alert.conf` would remain afterward, cleanup must
+throw an explicit `RuntimeException` before writing anything, leaving
+`extensions_custom.conf` and the legacy fragment unchanged. Comments or other
+text merely mentioning the filename do not block cleanup. Delete the fragment
+only when no active include remains.
+Other bytes, files, whitespace, and administrator configuration must remain
+unchanged. Run cleanup twice, starting with the fragment both present and
+absent, to check idempotence; never delete `extensions_custom.conf` itself.
+
+The legacy fragment defined three contexts, not an acceptance-check subroutine.
+Its existing summary references to `repeatcaller-alert-accept-check` are
+preserved without inventing new dialplan behaviour. Report that pre-existing
+undefined reference separately if the legacy summary context is exercised.
+
 ## 1.1.1 Internal Alert Call Caller Name
 
 Run the install contract as well as the alerting, admin, and release contracts
@@ -151,6 +183,10 @@ calls, and independent mixed internal/external channel snapshots. It checks
 that only `CONNECTEDLINE(name,i)` changes while callee Caller ID, both numbers,
 and allowed, restricted, or unavailable privacy flags remain untouched.
 
+The PJSIP fixture exposes `CHANNEL(endpoint)`, the actual Asterisk endpoint
+accessor, rather than the unsupported `CHANNEL(pjsip,endpoint)` combination.
+It includes an alphanumeric endpoint independent of the caller number.
+
 These simulations do not validate Asterisk execution, SIP headers, or handset
 display, marker inheritance, parent-channel isolation, forwarding, or redirects.
 Before release, complete these focused checks on FreePBX/PBXact 16
@@ -161,6 +197,11 @@ and 17, recording the Core, framework, Asterisk, driver, and handset versions:
 	`func-apply-sipheaders`: one guarded Gosub should
 	enter `repeatcaller-alert-caller-name`; all existing header commands and
 	other modules' additions must remain. Reload again and check for duplicates.
+- Confirm the generated subroutine reads `CHANNEL(endpoint)` for PJSIP and
+	`CHANNEL(peername)` for chan_sip. Use an actual Repeat Caller Alert Call:
+	an ordinary CLI Local originate without the module marker is deliberately
+	excluded. Check the matching call's log for execution of the name setter,
+	then inspect the initial endpoint INVITE and actual handset display.
 - Call a standard PJSIP extension and, on 16 where installed, a chan_sip
 	extension with managed-elsewhere enabled. Confirm the handset and initial
 	INVITE display `Repeat Caller` without a fabricated number. Inspect From,

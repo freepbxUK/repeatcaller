@@ -11,7 +11,7 @@
   <more-info>https://github.com/freepbxUK/repeatcaller</more-info>
 
   <changelog>
-    *1.1.1* Names internal SIP/PJSIP Alert Call endpoint legs Repeat Caller through local connected-line identity, gated by FreePBX device technology and dial string. Stops notifications after incident acceptance independently of suppression and reminder settings, cancels outstanding email work, and preserves call tracking and fresh alerts after clearing and rearming.
+    *1.1.1* Names internal SIP/PJSIP Alert Call endpoint legs Repeat Caller without changing caller numbers. Moves dialplan generation to FreePBX BMO and selectively removes the legacy custom fragment and managed include. Stops notifications after acceptance while preserving call tracking and alerts for new qualifying episodes.
     *1.1.0* First signed FreePBX UK release. Adds per-rule Test Email, improves DID route selection and email sender handling, and introduces 25-record pagination with persistent sorting for incident and alert history tables.
     *1.0.2* Improves multilingual Alert Call handling, adds native French support with English fallback, and introduces language status and sample playback.
     *1.0.1* Improves Alert Reminder sequencing, rule editing, DID controls, suppression, snooze, and global controls.

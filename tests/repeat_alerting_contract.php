@@ -98,10 +98,12 @@ function assert_same($expected, $actual, string $message): void {
 	}
 }
 
-$installSource = file_get_contents(__DIR__ . '/../install.php');
-assert_true($installSource !== false, 'install.php should be readable for alert-call dialplan contract checks');
+$dialplanOwnerSource = file_get_contents(__DIR__ . '/../Repeatcaller.class.php');
+assert_true($dialplanOwnerSource !== false, 'BMO class should be readable for alert-call dialplan contract checks');
+assert_true(preg_match('/<<<\x27CONF\x27\n(.*?)\nCONF;/s', $dialplanOwnerSource, $generatedDialplanMatch) === 1, 'BMO generation must contain the migrated Alert Call dialplan');
+$installSource = $generatedDialplanMatch[1];
 assert_true(strpos($installSource, 'U(repeatcaller-alert-playback^${REPEATCALLER_PLAYBACK_TARGET}^${IF($["${REPEATCALLER_PLAYBACK_LANGUAGE}"=""]?${CHANNEL(language)}:${REPEATCALLER_PLAYBACK_LANGUAGE})}^${REPEATCALLER_ALERT_HISTORY_ID}^${REPEATCALLER_INCIDENT_ID}^${REPEATCALLER_ALERT_RECIPIENT}^${REPEATCALLER_SUMMARY_MODE}^${REPEATCALLER_SUMMARY_CALL_COUNT}^${REPEATCALLER_SUMMARY_THRESHOLD}^${REPEATCALLER_SUMMARY_WINDOW_MINUTES}^${REPEATCALLER_SUMMARY_CALLER_KIND}^${REPEATCALLER_SUMMARY_CALLER_VALUE}^${REPEATCALLER_SUMMARY_DID_VALUE}^${REPEATCALLER_RECORDING_LANGUAGE})') !== false, 'called-channel U() invocation must carry summary values and the independent recording language into alert playback');
-assert_true(strpos($installSource, 'AGI(__REPEATCALLER_AGI_SCRIPT__,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,${REPEATCALLER_ALERT_RECIPIENT},${ARG1},${ARG6},${ARG7},${ARG8},${ARG9},${ARG10},${ARG11},${ARG12},${ARG13})') !== false, 'generated alert-playback dialplan must delegate answered-call interaction to one recording-language-aware AGI session');
+assert_true(strpos($installSource, 'AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,${REPEATCALLER_ALERT_RECIPIENT},${ARG1},${ARG6},${ARG7},${ARG8},${ARG9},${ARG10},${ARG11},${ARG12},${ARG13})') !== false, 'generated alert-playback dialplan must delegate answered-call interaction to one recording-language-aware AGI session');
 assert_true(strpos($installSource, 'Read(REPEATCALLER_DTMF') === false, 'answered-call interaction must no longer depend on dialplan Read() collection');
 assert_true(strpos($installSource, 'While($[') === false, 'response loop must be finite and must not rely on an unbounded While retry structure');
 assert_true(strpos($installSource, '[repeatcaller-alert-summary]') !== false, 'generated dialplan may retain the summary helper context for compatibility even though answered-call interaction is now AGI-owned');

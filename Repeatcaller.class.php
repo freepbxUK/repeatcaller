@@ -99,7 +99,11 @@ class Repeatcaller implements \BMO {
 	}
 
 	public function doDialplanHook(&$ext, $engine, $priority): void {
-		if ($engine !== 'asterisk' || !$ext->section_exists('func-apply-sipheaders')) {
+		if ($engine !== 'asterisk') {
+			return;
+		}
+		$this->addAlertCallDialplan($ext);
+		if (!$ext->section_exists('func-apply-sipheaders')) {
 			return;
 		}
 
@@ -108,7 +112,7 @@ class Repeatcaller implements \BMO {
 		$ext->add($context, 's', '', new \ext_set('LOCAL(repeatcaller_tech)', '${CHANNEL(channeltype)}'));
 		$ext->add($context, 's', '', new \ext_gotoif('$["${LOCAL(repeatcaller_tech)}"="PJSIP"]', 'pjsip'));
 		$ext->add($context, 's', '', new \ext_gotoif('$["${LOCAL(repeatcaller_tech)}"="SIP"]', 'sip', 'done'));
-		$ext->add($context, 's', 'pjsip', new \ext_set('LOCAL(repeatcaller_endpoint)', '${CHANNEL(pjsip,endpoint)}'));
+		$ext->add($context, 's', 'pjsip', new \ext_set('LOCAL(repeatcaller_endpoint)', '${CHANNEL(endpoint)}'));
 		$ext->add($context, 's', '', new \ext_goto('check'));
 		$ext->add($context, 's', 'sip', new \ext_set('LOCAL(repeatcaller_endpoint)', '${CHANNEL(peername)}'));
 		$ext->add($context, 's', 'check', new \ext_gotoif('$["${LOCAL(repeatcaller_endpoint)}"=""]', 'done'));
@@ -118,6 +122,163 @@ class Repeatcaller implements \BMO {
 		$ext->add($context, 's', 'done', new \ext_return());
 
 		$ext->splice('func-apply-sipheaders', 's', 0, new \ext_gosubif('$["${REPEATCALLER_INTERNAL_ORIGIN}"="1"]', $context . ',s,1'));
+	}
+
+	private function addAlertCallDialplan($ext): void {
+		$dialplan = <<<'CONF'
+[repeatcaller-alert-launch]
+exten => _X.,1,NoOp(Repeat Caller outbound alert for ${EXTEN})
+ same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/launch_channel)=${CHANNEL(name)})
+ same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/launch_uniqueid)=${CHANNEL(uniqueid)})
+ same => n,Dial(Local/${EXTEN}@from-internal/n,,U(repeatcaller-alert-playback^${REPEATCALLER_PLAYBACK_TARGET}^${IF($["${REPEATCALLER_PLAYBACK_LANGUAGE}"=""]?${CHANNEL(language)}:${REPEATCALLER_PLAYBACK_LANGUAGE})}^${REPEATCALLER_ALERT_HISTORY_ID}^${REPEATCALLER_INCIDENT_ID}^${REPEATCALLER_ALERT_RECIPIENT}^${REPEATCALLER_SUMMARY_MODE}^${REPEATCALLER_SUMMARY_CALL_COUNT}^${REPEATCALLER_SUMMARY_THRESHOLD}^${REPEATCALLER_SUMMARY_WINDOW_MINUTES}^${REPEATCALLER_SUMMARY_CALLER_KIND}^${REPEATCALLER_SUMMARY_CALLER_VALUE}^${REPEATCALLER_SUMMARY_DID_VALUE}^${REPEATCALLER_RECORDING_LANGUAGE}))
+ same => n,Set(REPEATCALLER_DIALSTATUS_REPORTED=1)
+ same => n,AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},dialstatus,${REPEATCALLER_ALERT_RECIPIENT},${DIALSTATUS},${HANGUPCAUSE})
+ same => n,Hangup()
+
+exten => h,1,Set(REPEATCALLER_LAUNCH_DB_DELETE=${DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/launch_channel)})
+ same => n,Set(REPEATCALLER_LAUNCH_UID_DB_DELETE=${DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/launch_uniqueid)})
+ same => n,GotoIf($["${REPEATCALLER_DIALSTATUS_REPORTED}"="1"]?done)
+ same => n,GotoIf($["${REPEATCALLER_ALERT_HISTORY_ID}"=""]?done)
+ same => n,AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},dialstatus,${REPEATCALLER_ALERT_RECIPIENT},${IF($["${DIALSTATUS}"=""]?CANCEL:${DIALSTATUS})},${HANGUPCAUSE})
+ same => n(done),NoOp()
+
+[repeatcaller-alert-playback]
+exten => s,1,NoOp(Repeat Caller alert playback)
+ same => n,Set(CHANNEL(language)=${ARG2})
+ same => n,Set(REPEATCALLER_ALERT_HISTORY_ID=${ARG3})
+ same => n,Set(REPEATCALLER_INCIDENT_ID=${ARG4})
+ same => n,Set(REPEATCALLER_ALERT_RECIPIENT=${ARG5})
+ same => n,Answer()
+ same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)=${CHANNEL(name)})
+ same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)=${CHANNEL(uniqueid)})
+ same => n,Set(REPEATCALLER_ALERT_COMPLETED=)
+ same => n,AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,${REPEATCALLER_ALERT_RECIPIENT},${ARG1},${ARG6},${ARG7},${ARG8},${ARG9},${ARG10},${ARG11},${ARG12},${ARG13})
+ same => n,Hangup()
+exten => remote_accepted,1,Set(REPEATCALLER_ALERT_COMPLETED=1)
+ same => n,Background(${IF($["${REPEATCALLER_ALERT_REMOTE_PROMPT}"=""]?incoming-call-no-longer-avail:${REPEATCALLER_ALERT_REMOTE_PROMPT})})
+ same => n,Background(${IF($["${REPEATCALLER_ALERT_THANKYOU_PROMPT}"=""]?auth-thankyou:${REPEATCALLER_ALERT_THANKYOU_PROMPT})})
+ same => n,Background(${IF($["${REPEATCALLER_ALERT_GOODBYE_PROMPT}"=""]?goodbye:${REPEATCALLER_ALERT_GOODBYE_PROMPT})})
+ same => n,Hangup()
+
+exten => 1,1,Goto(s,remote_accepted)
+exten => 2,1,Goto(s,remote_accepted)
+exten => i,1,Goto(s,remote_accepted)
+
+[repeatcaller-alert-summary]
+exten => s,1,NoOp(Repeat Caller generated summary ${ARG1})
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,Background(beep&beep&beep&warning&beep&beep&beep)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,Background(this&alert&has-been&initiated&for)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,GotoIf($["${ARG1}"="invert"]?invert_threshold)
+ same => n,SayNumber(${ARG2})
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,GotoIf($[${ARG2} = 1]?single_call:plural_calls)
+ same => n(invert_threshold),Background(less-than)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,SayNumber(${ARG3})
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,GotoIf($[${ARG3} = 1]?single_call:plural_calls)
+ same => n(single_call),Background(call)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,Goto(window_within)
+ same => n(plural_calls),Background(calls)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n(window_within),Background(within)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,SayNumber(${ARG4})
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,GotoIf($[${ARG4} = 1]?single_minute:plural_minutes)
+ same => n(single_minute),Background(minute)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,Goto(caller_info)
+ same => n(plural_minutes),Background(minutes)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n(caller_info),GotoIf($["${ARG5}"="none"]?calling_number)
+ same => n,GotoIf($["${ARG5}"="unknown"]?unknown_caller)
+ same => n,Background(from)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,SayDigits(${ARG6})
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,Goto(calling_number)
+ same => n(unknown_caller),Background(from-unknown-caller)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n(calling_number),GotoIf($["${ARG7}"=""]?response_menu)
+ same => n,Background(calling&number)
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n,SayDigits(${ARG7})
+ same => n,Gosub(repeatcaller-alert-accept-check,s,1(${REPEATCALLER_INCIDENT_ID}))
+ same => n(response_menu),Background(vqplus-accept)
+ same => n,Return()
+
+exten => 1,1,Goto(repeatcaller-alert-playback,s,accepted)
+exten => 2,1,Goto(repeatcaller-alert-playback,s,declined)
+exten => i,1,Goto(repeatcaller-alert-playback,s,invalid_response)
+
+exten => h,1,GotoIf($["${REPEATCALLER_ALERT_COMPLETED}"="1"]?done)
+ same => n,AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},answered_no_response,${REPEATCALLER_ALERT_RECIPIENT},${REPEATCALLER_DTMF})
+ same => n(done),NoOp(Repeat Caller alert playback complete)
+ same => n,Set(REPEATCALLER_PLAYBACK_DB_DELETE=${DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)})
+ same => n,Set(REPEATCALLER_PLAYBACK_UID_DB_DELETE=${DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)})
+CONF;
+		$context = '';
+		$extension = '';
+		foreach (explode("\n", $dialplan) as $line) {
+			$line = trim($line);
+			if ($line === '') {
+				continue;
+			}
+			if (preg_match('/^\[([^]]+)\]$/', $line, $match)) {
+				$context = $match[1];
+				$extension = '';
+				continue;
+			}
+			if (!preg_match('/^(?:exten => ([^,]+),|same => )([^,(]+)(?:\(([^)]+)\))?,(.*)$/', $line, $match) || $context === '') {
+				throw new \LogicException('Invalid Repeat Caller dialplan instruction.');
+			}
+			if ($match[1] !== '') {
+				$extension = $match[1];
+			}
+			$ext->add($context, $extension, $match[3], new \extension($match[4]));
+		}
+	}
+
+	public static function removeLegacyAlertCallDialplan(string $astetc): void {
+		$astetc = rtrim($astetc, '/');
+		if ($astetc === '') {
+			return;
+		}
+		$fragmentPath = $astetc . '/repeatcaller_alert.conf';
+		// Administrator dialplan is only inspected when the module-owned legacy fragment still exists.
+		if (!file_exists($fragmentPath)) {
+			return;
+		}
+		$customPath = $astetc . '/extensions_custom.conf';
+		if (file_exists($customPath)) {
+			$content = file_get_contents($customPath);
+			if ($content === false) {
+				throw new \RuntimeException('Unable to read legacy Repeat Caller dialplan include.');
+			}
+			$updated = preg_replace('/^; Repeat Caller managed include\r?\n#include repeatcaller_alert\.conf\r?\n; End Repeat Caller managed include(?:\r?\n|$)/m', '', $content);
+			if ($updated === null) {
+				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
+			}
+			// Check the prospective content before writing so a refusal leaves the file untouched.
+			$activeInclude = preg_match('/^[ \t]*#(?:try)?include[ \t]+["<]?(?:[^\s"<>;]*\/)?repeatcaller_alert\.conf[">]?[ \t]*(?:;[^\r\n]*)?\r?$/m', $updated);
+			if ($activeInclude === false) {
+				throw new \RuntimeException('Unable to inspect legacy Repeat Caller dialplan include.');
+			}
+			if ($activeInclude === 1) {
+				throw new \RuntimeException('An unmanaged reference to repeatcaller_alert.conf remains in extensions_custom.conf; automatic removal has been stopped to avoid breaking administrator dialplan.');
+			}
+			if ($updated !== $content && file_put_contents($customPath, $updated) === false) {
+				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
+			}
+		}
+		if (!unlink($fragmentPath)) {
+			throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan fragment.');
+		}
 	}
 
 	public function backup(): array {

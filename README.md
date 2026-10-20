@@ -163,7 +163,9 @@ The module appears under Reports > Repeat Caller.
 
 Do not uninstall during an update. Uninstall removes Repeat Caller tables,
 rules, settings, incidents, alert state, alert history, suppression history,
-the managed alert dialplan fragment/include, and the deployed AGI script.
+the module's generated Alert Call dialplan contribution, and the deployed AGI
+script. Legacy module-owned dialplan artefacts are also cleaned up selectively;
+unrelated administrator dialplan content is retained.
 Uninstalling therefore deletes stored module data; use an update operation
 instead.
 
@@ -643,6 +645,12 @@ The name is applied on the actual called channel after FreePBX has selected
 its caller identity, not in the alert launch context. The module uses an
 additive BMO dialplan hook in FreePBX's existing called-channel SIP-header
 handler; it does not replace shared hooks or change routing or Dial options.
+All Repeat Caller Alert Call contexts are contributed through FreePBX BMO
+generation and appear in `extensions_additional.conf` after reload. Repeat
+Caller owns no custom Asterisk `.conf` file and does not add an include to or
+depend on `extensions_custom.conf`. Upgrade and uninstall remove only the
+legacy module fragment and its exact managed include block, preserving all
+other administrator configuration.
 Only marked Repeat Caller calls whose actual endpoint matches both the
 FreePBX `DEVICE` technology and exact SIP/PJSIP dial string receive the name.
 Local channels, custom devices, and missing or mismatched device records are
@@ -1118,6 +1126,12 @@ Future release consideration:
 
 ### 1.1.1, patch release, 20 October 2026
 
+- Moves the complete existing Alert Call dialplan into FreePBX BMO generation,
+  removing the custom `.conf` dependency. Upgrade and uninstall selectively
+  remove the legacy module fragment/include without changing other custom
+  dialplan content. Existing Alert Call instructions and routing are retained.
+- Corrects PJSIP endpoint lookup to `CHANNEL(endpoint)` so the guarded internal
+  receiving-channel name assignment can run; chan_sip uses `CHANNEL(peername)`.
 - Stops accepted incidents from generating further GUI, email, or Alert Call
   notifications, including after suppression expiry or with suppression disabled.
   Cancels outstanding email work and checks state again before delivery, while
@@ -1337,8 +1351,10 @@ tail -f /var/log/asterisk/full | grep -i repeatcaller
 
 ## Uninstalling
 
-Uninstall removes Repeat Caller job registration, Repeat Caller tables, managed
-dialplan include/fragment, and the deployed AGI callback script. Back up first
+Uninstall removes Repeat Caller job registration, Repeat Caller tables, the
+generated dialplan contribution on reload, and the deployed AGI callback script.
+It also selectively removes any legacy module fragment/managed include block,
+without deleting `extensions_custom.conf` or changing unrelated content. Back up first
 if you need existing rules/history. These commands run from a neutral
 directory, and the module path removal uses an absolute path.
 
