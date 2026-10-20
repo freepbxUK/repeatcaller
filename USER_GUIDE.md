@@ -122,10 +122,26 @@ Alert reminder emails also start with the FreePBX System Identifier when it is a
 - Ordered: attempts destinations in saved order, moving forward when unaccepted.
 - Keep Trying: controls whether unsuccessful destinations remain eligible later.
 - System Recording: optional recording played before generated message.
-- Caller ID managed elsewhere: enabled by default for new rules. Repeat Caller will not set the Caller ID for Alert Calls. Caller presentation is managed elsewhere, for example by Outbound Routes, trunks, another module, an SBC, or your network provider. When you tick this option, the Alert Call Caller ID field is cleared immediately, disabled, and its example placeholder disappears.
+- Caller ID managed elsewhere: enabled by default for new rules. Repeat Caller will not set the caller number for Alert Calls. External caller presentation is managed elsewhere, for example by Outbound Routes, trunks, another module, an SBC, or your network provider. When you tick this option, the Alert Call Caller ID field is cleared immediately, disabled, and its example placeholder disappears.
 - Alert Call Caller ID: sets the caller ID presented on outbound alert calls. The preferred format is international E.164 with a leading +, for example +447812345678. When the field is editable and empty, the example placeholder follows the configured Default Country Code.
 
 If you untick Caller ID managed elsewhere while Alert Call is enabled, Alert Call Caller ID becomes mandatory and the previous unsaved value is restored automatically if one was entered earlier in the session. Saving with Caller ID managed elsewhere still checked persists a blank Caller ID and permanently forgets the prior value.
+
+Internal SIP/PJSIP Alert Calls are intended to display **Repeat Caller** in
+either Caller ID mode, without an extra caller number. When FreePBX's
+called-channel SIP-header handler runs, the module sets only the local outgoing
+connected-line name on marked calls matching both a genuine device's technology
+and exact dial string. Callee Caller ID, caller numbers, and privacy flags are
+not changed. Custom devices, Local channels, and trunk endpoints without a
+matching genuine device record do not qualify. An endpoint configured as both
+a genuine device and a trunk remains a configuration-conflict risk to review.
+
+Outbound caller identity configuration and routing remain in place. Forwarding,
+Follow Me, mixed Ring All/Ordered calls, Keep Trying, and SIP redirects require
+live validation, including unchanged external identities. Some direct SIP
+redirects bypass the handler and may miss the internal label. Privacy,
+From-user overrides, and handset display policies remain under PBX and endpoint
+control; simulated channel tests do not establish actual SIP presentation.
 
 Internal safeguard note:
 

@@ -108,6 +108,62 @@ php tests/repeat_release_contract.php
 
 The alerting contract covers first-destination NOANSWER progression, cumulative Ordered stages, mixed Keep Trying values, waiting for all sibling attempts, repeated stages after the final destination, acceptance and late-callback protection, Ring All editor and destination behaviour, and Ignore Callers separation. The admin and release contracts cover the Ring All/Ordered editor round-trip and documentation/help-text parity.
 
+## 1.1.1 Internal Alert Call Caller Name
+
+Run the install contract as well as the alerting, admin, and release contracts
+above. The install contract simulates the generated caller-name subroutine and
+checks additive integration without replacing the existing SIP-header handler:
+
+```bash
+php tests/repeat_install_contract.php
+```
+
+Coverage includes genuine device technology plus exact dial-string matching,
+custom/trunk identifier collisions, missing or mismatched records, unmarked
+calls, and independent mixed internal/external channel snapshots. It checks
+that only `CONNECTEDLINE(name,i)` changes while callee Caller ID, both numbers,
+and allowed, restricted, or unavailable privacy flags remain untouched.
+
+These simulations do not validate Asterisk execution, SIP headers, or handset
+display, marker inheritance, parent-channel isolation, forwarding, or redirects.
+Before release, complete these focused checks on FreePBX/PBXact 16
+and 17, recording the Core, framework, Asterisk, driver, and handset versions:
+
+- Install the development version through the normal module upgrade path so
+	BMO hook registration is refreshed, then Apply Config. Inspect
+	`func-apply-sipheaders`: one guarded Gosub should
+	enter `repeatcaller-alert-caller-name`; all existing header commands and
+	other modules' additions must remain. Reload again and check for duplicates.
+- Call a standard PJSIP extension and, on 16 where installed, a chan_sip
+	extension with managed-elsewhere enabled. Confirm the handset and initial
+	INVITE display `Repeat Caller` without a fabricated number. Inspect From,
+	P-Asserted-Identity and Remote-Party-ID where enabled.
+- Repeat with an explicit external caller number and with a number mapping to
+	a local user. Confirm FreePBX's earlier name rewrite does not defeat the
+	endpoint label and all caller numbers match the pre-patch baseline.
+- Compare external calls in both Caller ID modes against baseline, including
+	route/trunk selection and all identity headers, not just handset display.
+- Test a mixed rule with Ring All and Ordered, one Keep Trying progression,
+	acceptance cancelling siblings, and an introductory System Recording.
+- Test internal CF, Follow Me with simultaneous internal/external legs, and
+	handset SIP redirects to internal and external destinations. Internal channels
+	that execute the handler should have the label; external identities and parent
+	caller identity must match baseline. Capture redirect routing explicitly:
+	direct replacement channels can bypass the original `b()` handler and miss
+	the label. Record this limitation rather than assuming every redirect is covered.
+- Test custom devices whose identifiers and dial strings match trunk endpoint
+	names; confirm the `custom` device technology prevents any name assignment.
+- Review any endpoint configured as both a genuine SIP/PJSIP device and a
+	trunk. Positive device checks alone do not resolve this conflict; it is a
+	residual configuration risk, not a case covered by custom-device rejection.
+- Check an unrelated internal call, custom device dial string, recording,
+	CDR account marker/filtering, and initial plus reminder alert attempts.
+	Internal CDR name fields may change; numbers and origin safeguards must not.
+- Test restricted and unavailable name/number presentation, plus any endpoint
+	From-user override in use. Compare privacy headers and presentation against
+	baseline; confirm neither callee Caller ID nor either number is changed.
+	Do not change privacy settings as part of this patch; document display limits.
+
 ## Additional real FreePBX Alert Call checks
 
 These are additional manual installation checks beyond the contract suites:

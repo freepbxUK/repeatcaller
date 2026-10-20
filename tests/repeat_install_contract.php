@@ -76,6 +76,80 @@ function assert_same($expected, $actual, string $message): void {
 	}
 }
 
+class CallerNameDialplanCommand {
+	public array $arguments;
+	public function __construct(...$arguments) {
+		$this->arguments = $arguments;
+	}
+}
+class ext_gotoif extends CallerNameDialplanCommand {}
+class ext_set extends CallerNameDialplanCommand {}
+class ext_goto extends CallerNameDialplanCommand {}
+class ext_return extends CallerNameDialplanCommand {}
+class ext_gosubif extends CallerNameDialplanCommand {}
+
+class CallerNameDialplan {
+	public array $contexts = [];
+	public array $insertions = [];
+	public function section_exists(string $context): bool {
+		return isset($this->contexts[$context]);
+	}
+	public function add(string $context, string $extension, string $label, CallerNameDialplanCommand $command): void {
+		$this->contexts[$context][] = ['label' => $label, 'command' => $command];
+	}
+	public function splice(string $context, string $extension, int $position, CallerNameDialplanCommand $command): void {
+		$this->insertions[] = [$context, $extension, $position, $command];
+		array_splice($this->contexts[$context], $position, 0, [['label' => '', 'command' => $command]]);
+	}
+}
+
+function runCallerNameDialplan(array $commands, array $variables, array $devices): array {
+	$expand = static function (string $value) use (&$variables, $devices): string {
+		while (strpos($value, '${') !== false) {
+			$value = preg_replace_callback('/\$\{([^{}]*)\}/', static function (array $match) use (&$variables, $devices): string {
+				if (preg_match('/^DB\(DEVICE\/(.*)\/(dial|tech)\)$/', $match[1], $deviceMatch)) {
+					return (string)($devices[$deviceMatch[1]][$deviceMatch[2]] ?? '');
+				}
+				if (preg_match('/^TOUPPER\((.*)\)$/', $match[1], $upperMatch)) {
+					return strtoupper($upperMatch[1]);
+				}
+				assert_true(array_key_exists($match[1], $variables), 'caller-name simulation must recognize every variable: ' . $match[1]);
+				return (string)$variables[$match[1]];
+			}, $value);
+		}
+		return $value;
+	};
+	$labels = [];
+	foreach ($commands as $position => $entry) {
+		if ($entry['label'] !== '') {
+			$labels[$entry['label']] = $position;
+		}
+	}
+	$position = 0;
+	for ($steps = 0; $steps < 30; $steps++) {
+		assert_true(isset($commands[$position]), 'caller-name subroutine must terminate with Return');
+		$command = $commands[$position]['command'];
+		$arguments = $command->arguments;
+		$target = null;
+		if ($command instanceof ext_return) {
+			return $variables;
+		} elseif ($command instanceof ext_set) {
+			assert_true(strpos($arguments[0], 'LOCAL(repeatcaller_') === 0 || $arguments[0] === 'CONNECTEDLINE(name,i)', 'caller-name subroutine must only write local scratch values and the inhibited connected-line name');
+			$variables[$arguments[0]] = $expand($arguments[1]);
+		} elseif ($command instanceof ext_gotoif) {
+			assert_true(preg_match('/^\$\["([^"]*)"(!=|=)"([^"]*)"\]$/', $expand($arguments[0]), $condition) === 1, 'caller-name simulation must recognize the generated condition');
+			$matches = $condition[2] === '=' ? $condition[1] === $condition[3] : $condition[1] !== $condition[3];
+			$target = $matches ? $arguments[1] : ($arguments[2] ?? null);
+		} elseif ($command instanceof ext_goto) {
+			$target = $arguments[0];
+		} else {
+			throw new RuntimeException('Unexpected caller-name dialplan command');
+		}
+		$position = $target !== null ? $labels[$target] : $position + 1;
+	}
+	throw new RuntimeException('Caller-name subroutine exceeded its simulation step limit');
+}
+
 /** Bytes a single indexed column contributes to InnoDB's key-length total. */
 function columnByteWidth(string $type, int $bytesPerChar): int {
 	$type = trim($type);
@@ -442,7 +516,7 @@ assert_true(strpos($installSource, 'Schema::install(') !== false, 'install.php m
 
 $moduleXml = file_get_contents($root . '/module.xml');
 assert_true($moduleXml !== false, 'module.xml should be readable');
-assert_true(strpos($moduleXml, '<version>1.1.0</version>') !== false, 'module version must declare 1.1.0 for the current release');
+assert_true(strpos($moduleXml, '<version>1.1.1</version>') !== false, 'module version must declare 1.1.1 for the current release');
 
 $schemaSource = file_get_contents($root . '/src/Schema.php');
 assert_true($schemaSource !== false, 'src/Schema.php should be readable');
@@ -584,6 +658,84 @@ assert_true($controllerSource !== false, 'Repeatcaller.class.php should be reada
 assert_true(strpos($controllerSource, "setSetting('initial_processing_boundary_at'") === false, 'ordinary settings saves must not persist the internal initial_processing_boundary_at key');
 assert_true(strpos($controllerSource, 'astDbGetValue(') !== false && strpos($controllerSource, 'astmanAction(') !== false, 'controller acceptance path must query tracked live channels and issue AMI control actions');
 assert_true(strpos($controllerSource, "'Redirect'") !== false && strpos($controllerSource, "'Hangup'") !== false, 'controller acceptance path must redirect answered playback legs and hang up launch or ringing legs');
+
+$callerNameModule = new Repeatcaller(new stdClass());
+assert_same(500, $callerNameModule->myDialplanHooks(), 'caller-name hook must run after Core legacy generation at priority 100');
+$callerNameDialplan = new CallerNameDialplan();
+$existingSipHeaderCommands = [
+	['label' => '', 'command' => new CallerNameDialplanCommand('Existing SIP header handler')],
+	['label' => '', 'command' => new ext_return()],
+];
+$callerNameDialplan->contexts['func-apply-sipheaders'] = $existingSipHeaderCommands;
+$callerNameModule->doDialplanHook($callerNameDialplan, 'asterisk', 500);
+assert_same($existingSipHeaderCommands, array_slice($callerNameDialplan->contexts['func-apply-sipheaders'], 1), 'caller-name integration must preserve all existing SIP-header handler commands');
+assert_same(1, count($callerNameDialplan->insertions), 'caller-name integration must add just one call to the existing called-channel handler');
+assert_same(['func-apply-sipheaders', 's', 0], array_slice($callerNameDialplan->insertions[0], 0, 3), 'caller-name integration must use additive entry-point insertion, not replace Dial options or shared hooks');
+assert_same(['$["${REPEATCALLER_INTERNAL_ORIGIN}"="1"]', 'repeatcaller-alert-caller-name,s,1'], $callerNameDialplan->insertions[0][3]->arguments, 'only marked module-owned calls may invoke the caller-name subroutine');
+$missingSipHandler = new CallerNameDialplan();
+$callerNameModule->doDialplanHook($missingSipHandler, 'asterisk', 500);
+assert_same([], $missingSipHandler->contexts, 'a missing Core handler must not cause creation or replacement of a shared context');
+$otherEngineDialplan = new CallerNameDialplan();
+$otherEngineDialplan->contexts['func-apply-sipheaders'] = $existingSipHeaderCommands;
+$callerNameModule->doDialplanHook($otherEngineDialplan, 'other', 500);
+assert_same([], $otherEngineDialplan->insertions, 'non-Asterisk engines must not receive caller-name integration');
+$callerNameCommands = $callerNameDialplan->contexts['repeatcaller-alert-caller-name'];
+$callerNameDevices = [
+	'201' => ['tech' => 'pjsip', 'dial' => 'PJSIP/201'],
+	'202' => ['tech' => 'sip', 'dial' => 'SIP/202'],
+	'203' => ['tech' => 'custom', 'dial' => 'Local/02079460000@from-internal'],
+	'204' => ['tech' => 'custom', 'dial' => 'PJSIP/carrier'],
+	'205' => ['tech' => 'custom', 'dial' => 'PJSIP/205'],
+	'206' => ['tech' => 'custom', 'dial' => 'SIP/206'],
+	'207' => ['dial' => 'PJSIP/207'],
+	'208' => ['tech' => 'sip', 'dial' => 'PJSIP/208'],
+	'209' => ['tech' => 'pjsip', 'dial' => 'PJSIP/carrier'],
+];
+foreach (['', '+441234567890', '201'] as $callerNumber) {
+	foreach ([['allowed_not_screened', 'allowed_not_screened'], ['prohib_not_screened', 'allowed_not_screened'], ['allowed_not_screened', 'prohib_not_screened'], ['unavailable', 'unavailable']] as [$namePresentation, $numberPresentation]) {
+		$channelIdentity = [
+			'REPEATCALLER_INTERNAL_ORIGIN' => '1',
+			'CALLERID(name)' => 'FreePBX callee name',
+			'CALLERID(num)' => '201',
+			'CONNECTEDLINE(name,i)' => 'FreePBX outgoing name',
+			'CONNECTEDLINE(num)' => $callerNumber,
+			'CALLERID(name-pres)' => $namePresentation,
+			'CALLERID(num-pres)' => $numberPresentation,
+			'CONNECTEDLINE(name-pres)' => $namePresentation,
+			'CONNECTEDLINE(num-pres)' => $numberPresentation,
+		];
+		$attempts = [
+			['PJSIP', '201', true],
+			['SIP', '202', true],
+			['PJSIP', 'carrier', false],
+			['SIP', 'pstn', false],
+			['Local', '201', false],
+			['PJSIP', '', false],
+			['PJSIP', '203', false],
+			['PJSIP', '204', false],
+			['PJSIP', '205', false],
+			['SIP', '206', false],
+			['PJSIP', '207', false],
+			['PJSIP', '208', false],
+			['PJSIP', '209', false],
+			['PJSIP', '202', false],
+		];
+		foreach ($attempts as [$technology, $endpoint, $isInternal]) {
+			$before = $channelIdentity + ['CHANNEL(channeltype)' => $technology, 'CHANNEL(pjsip,endpoint)' => $endpoint, 'CHANNEL(peername)' => $endpoint];
+			$after = runCallerNameDialplan($callerNameCommands, $before, $callerNameDevices);
+			$expectedName = $isInternal ? 'Repeat Caller' : $before['CONNECTEDLINE(name,i)'];
+			assert_same($expectedName, $after['CONNECTEDLINE(name,i)'], 'mixed channel snapshots must name only genuine internal devices: ' . $technology . '/' . $endpoint);
+			foreach ($before as $field => $value) {
+				if ($field !== 'CONNECTEDLINE(name,i)') {
+					assert_same($value, $after[$field], 'caller-name handling must preserve callee Caller ID, both numbers, all privacy flags and origin markers: ' . $field);
+				}
+			}
+			$before['REPEATCALLER_INTERNAL_ORIGIN'] = '';
+			assert_same($before, runCallerNameDialplan($callerNameCommands, $before, $callerNameDevices), 'unmarked calls must remain entirely unchanged');
+		}
+	}
+}
+assert_true(strpos($installSource, 'CALLERID(') === false && strpos($installSource, 'CONNECTEDLINE(') === false, 'launch and playback contexts must not change parent caller identity');
 
 assert_true(strpos($installSource, '$astetc . \'/repeatcaller_alert.conf\'') !== false, 'alert-call dialplan must be generated as a module-owned fragment, not by editing a FreePBX-generated file directly');
 assert_true(strpos($installSource, '$astetc . \'/extensions_custom.conf\'') !== false, 'install hook may only add the module-owned include to extensions_custom.conf');

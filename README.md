@@ -1,4 +1,4 @@
-# Repeat Caller 1.1.0 for FreePBX 16 and 17
+# Repeat Caller 1.1.1 for FreePBX 16 and 17
 
 Repeat Caller turns qualifying inbound call activity into actionable incidents
 on FreePBX/PBXact. Repeat mode detects when the same caller reaches a configured
@@ -8,7 +8,7 @@ email and Alert Call notifications.
 
 ## Release Status
 
-Repeat Caller 1.1.0 is the first signed FreePBX UK release. It is signed with
+Repeat Caller 1.1.0 was the first signed FreePBX UK release. It is signed with
 the author's developer GPG key, which is certified by the FreePBX Module
 Signing v2 master key. FreePBX uses this certification to verify the module's
 authenticity and integrity.
@@ -632,6 +632,34 @@ preferred format is international E.164 with a leading +, for example
 +447812345678. The example/placeholder follows the configured Default Country
 Code.
 
+For marked Alert Calls to genuine SIP/PJSIP devices, the module sets the local
+outgoing connected-line name to `Repeat Caller` when FreePBX's called-channel
+SIP-header handler runs, regardless of the Caller ID managed elsewhere setting.
+No caller number is generated or changed, and callee Caller ID and privacy
+flags are not modified. Normal outbound caller identity processing remains
+in place for external destinations.
+
+The name is applied on the actual called channel after FreePBX has selected
+its caller identity, not in the alert launch context. The module uses an
+additive BMO dialplan hook in FreePBX's existing called-channel SIP-header
+handler; it does not replace shared hooks or change routing or Dial options.
+Only marked Repeat Caller calls whose actual endpoint matches both the
+FreePBX `DEVICE` technology and exact SIP/PJSIP dial string receive the name.
+Local channels, custom devices, and missing or mismatched device records are
+excluded, as are trunk endpoints without a matching genuine device record.
+Only `CONNECTEDLINE(name,i)` is set, with update propagation inhibited; the
+parent channel is not directly modified. If the same endpoint is configured
+as both a genuine SIP/PJSIP device and a trunk, these positive device checks
+do not separately resolve that conflict; review such configuration before testing.
+
+Forwarding and SIP redirects require live validation. Independent channel
+snapshots do not establish real forwarding behavior or identity isolation.
+Direct SIP redirect replacement channels can bypass the original called-channel
+handler and may therefore miss the label. Test CF, Follow Me, redirects, and
+mixed destinations against baseline; external identities must remain unchanged.
+Initial SIP identity, endpoint privacy, From-user overrides, and handset
+display policies also require PBX testing.
+
 Alert Call destinations and Alert Call caller ID values are administrator-
 controlled PBX configuration. Only use trusted values that are appropriate for
 your dialplan, routing, and outbound calling policy.
@@ -1080,6 +1108,17 @@ Future release consideration:
   routing policy while preserving bounded fail-safe behaviour.
 
 ## Release History
+
+### 1.1.1, patch release
+
+- Sets the local outgoing connected-line name to `Repeat Caller` on marked
+  SIP/PJSIP Alert Call channels matching a genuine FreePBX device's technology
+  and dial string, after normal FreePBX caller identity processing.
+- Leaves callee Caller ID, caller numbers, privacy flags, existing rule settings,
+  destination routing, and internal-origin safeguards unchanged.
+- Adds focused generated-dialplan contract coverage for internal, external,
+  mixed, custom, unmarked, and privacy-state channel snapshots. Forwarding,
+  redirects, and actual SIP presentation remain live PBX test requirements.
 
 ### 1.1.0, first signed FreePBX UK release
 

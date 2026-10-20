@@ -13,7 +13,7 @@ namespace FreePBX\modules;
 class Repeatcaller implements \BMO {
 
 	/** Fallback only. Authoritative version lives in module.xml. */
-	const VERSION = '1.1.0';
+	const VERSION = '1.1.1';
 	const CSRF_SESSION_KEY = 'repeatcaller_csrf_token';
 	const REPEAT_MODE_NEVER = 'never';
 	const REPEAT_MODE_FIVE_MINUTES = '5m';
@@ -93,6 +93,32 @@ class Repeatcaller implements \BMO {
 	}
 	public function uninstall(): void {}
 	public function doConfigPageInit($page): void {}
+
+	public function myDialplanHooks() {
+		return 500;
+	}
+
+	public function doDialplanHook(&$ext, $engine, $priority): void {
+		if ($engine !== 'asterisk' || !$ext->section_exists('func-apply-sipheaders')) {
+			return;
+		}
+
+		$context = 'repeatcaller-alert-caller-name';
+		$ext->add($context, 's', '', new \ext_gotoif('$["${REPEATCALLER_INTERNAL_ORIGIN}"!="1"]', 'done'));
+		$ext->add($context, 's', '', new \ext_set('LOCAL(repeatcaller_tech)', '${CHANNEL(channeltype)}'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${LOCAL(repeatcaller_tech)}"="PJSIP"]', 'pjsip'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${LOCAL(repeatcaller_tech)}"="SIP"]', 'sip', 'done'));
+		$ext->add($context, 's', 'pjsip', new \ext_set('LOCAL(repeatcaller_endpoint)', '${CHANNEL(pjsip,endpoint)}'));
+		$ext->add($context, 's', '', new \ext_goto('check'));
+		$ext->add($context, 's', 'sip', new \ext_set('LOCAL(repeatcaller_endpoint)', '${CHANNEL(peername)}'));
+		$ext->add($context, 's', 'check', new \ext_gotoif('$["${LOCAL(repeatcaller_endpoint)}"=""]', 'done'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${TOUPPER(${DB(DEVICE/${LOCAL(repeatcaller_endpoint)}/tech)})}"!="${LOCAL(repeatcaller_tech)}"]', 'done'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${DB(DEVICE/${LOCAL(repeatcaller_endpoint)}/dial)}"!="${LOCAL(repeatcaller_tech)}/${LOCAL(repeatcaller_endpoint)}"]', 'done'));
+		$ext->add($context, 's', '', new \ext_set('CONNECTEDLINE(name,i)', 'Repeat Caller'));
+		$ext->add($context, 's', 'done', new \ext_return());
+
+		$ext->splice('func-apply-sipheaders', 's', 0, new \ext_gosubif('$["${REPEATCALLER_INTERNAL_ORIGIN}"="1"]', $context . ',s,1'));
+	}
 
 	public function backup(): array {
 		$backup = [
