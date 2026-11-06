@@ -1,4 +1,4 @@
-# Repeat Caller 1.1.1 for FreePBX 16 and 17
+# Repeat Caller 1.2.0 for FreePBX 16 and 17
 
 Repeat Caller turns qualifying inbound call activity into actionable incidents
 on FreePBX/PBXact. Repeat mode detects when the same caller reaches a configured
@@ -1124,7 +1124,7 @@ Future release consideration:
 
 ## Release History
 
-### 1.1.1, patch release, 20 October 2026
+### 1.2.0, minor release, 20 October 2026
 
 - Moves the complete existing Alert Call dialplan into FreePBX BMO generation,
   removing the custom `.conf` dependency. Upgrade and uninstall selectively
@@ -1147,7 +1147,7 @@ Future release consideration:
   mixed, custom, unmarked, and privacy-state channel snapshots. Forwarding,
   redirects, and actual SIP presentation remain live PBX test requirements.
 
-### 1.1.0, minor release, 20 October 2026
+### 1.1.0, first signed FreePBX UK release, 20 October 2026
 
 - First signed FreePBX UK release, published from the official
   `freepbxUK/repeatcaller` repository.
@@ -1239,8 +1239,8 @@ Future release consideration:
 
 #### Accepted incident suppression
 
-- Corrected in 1.1.1: accepted incidents cannot reserve or deliver further
-  notifications, whether suppression is active, expired, or disabled.
+- Accepted incidents cannot reserve or deliver further notifications, whether
+  suppression is active, expired, or disabled.
 - Preserves normal Alert Reminders for active unaccepted incidents.
 - After observed clearing and rearming, a genuinely new qualifying episode can
   create a new incident if suppression is disabled or expired. Suppression

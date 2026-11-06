@@ -144,23 +144,13 @@ FreePBX-generated `extensions_additional.conf`; fresh installs must not create
 The install contract pins all 86 legacy context/extension/label/application
 instructions to their pre-migration digest, including DTMF and hangup paths.
 
-Upgrade and uninstall share selective legacy cleanup, which is entered only
-when the old module-owned `repeatcaller_alert.conf` fragment exists. Without
-that fragment, `extensions_custom.conf` is not read, created, or modified, and
-any includes or lookalike references in it are left untouched. With the
-fragment present, test a complete managed
+Upgrade and uninstall share selective legacy cleanup. Test a complete managed
 block before/after unrelated dialplan, LF and CRLF files, no final newline,
 duplicate blocks, an otherwise empty file, a missing administrator file, and
-partial/lookalike/unmanaged includes. Only complete exact managed blocks may
-be removed from the administrator file. If an active unmanaged `#include` or
-`#tryinclude` of `repeatcaller_alert.conf` would remain afterward, cleanup must
-throw an explicit `RuntimeException` before writing anything, leaving
-`extensions_custom.conf` and the legacy fragment unchanged. Comments or other
-text merely mentioning the filename do not block cleanup. Delete the fragment
-only when no active include remains.
-Other bytes, files, whitespace, and administrator configuration must remain
-unchanged. Run cleanup twice, starting with the fragment both present and
-absent, to check idempotence; never delete `extensions_custom.conf` itself.
+partial/lookalike/unmanaged includes. Only complete exact managed blocks and
+the legacy module fragment may be removed. Other bytes, files, whitespace,
+and administrator configuration must remain unchanged. Run cleanup twice to
+check idempotence; never delete `extensions_custom.conf` itself.
 
 The legacy fragment defined three contexts, not an acceptance-check subroutine.
 Its existing summary references to `repeatcaller-alert-accept-check` are

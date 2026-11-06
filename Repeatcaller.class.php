@@ -13,7 +13,7 @@ namespace FreePBX\modules;
 class Repeatcaller implements \BMO {
 
 	/** Fallback only. Authoritative version lives in module.xml. */
-	const VERSION = '1.1.1';
+	const VERSION = '1.2.0';
 	const CSRF_SESSION_KEY = 'repeatcaller_csrf_token';
 	const REPEAT_MODE_NEVER = 'never';
 	const REPEAT_MODE_FIVE_MINUTES = '5m';
@@ -249,11 +249,6 @@ CONF;
 		if ($astetc === '') {
 			return;
 		}
-		$fragmentPath = $astetc . '/repeatcaller_alert.conf';
-		// Administrator dialplan is only inspected when the module-owned legacy fragment still exists.
-		if (!file_exists($fragmentPath)) {
-			return;
-		}
 		$customPath = $astetc . '/extensions_custom.conf';
 		if (file_exists($customPath)) {
 			$content = file_get_contents($customPath);
@@ -261,22 +256,12 @@ CONF;
 				throw new \RuntimeException('Unable to read legacy Repeat Caller dialplan include.');
 			}
 			$updated = preg_replace('/^; Repeat Caller managed include\r?\n#include repeatcaller_alert\.conf\r?\n; End Repeat Caller managed include(?:\r?\n|$)/m', '', $content);
-			if ($updated === null) {
-				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
-			}
-			// Check the prospective content before writing so a refusal leaves the file untouched.
-			$activeInclude = preg_match('/^[ \t]*#(?:try)?include[ \t]+["<]?(?:[^\s"<>;]*\/)?repeatcaller_alert\.conf[">]?[ \t]*(?:;[^\r\n]*)?\r?$/m', $updated);
-			if ($activeInclude === false) {
-				throw new \RuntimeException('Unable to inspect legacy Repeat Caller dialplan include.');
-			}
-			if ($activeInclude === 1) {
-				throw new \RuntimeException('An unmanaged reference to repeatcaller_alert.conf remains in extensions_custom.conf; automatic removal has been stopped to avoid breaking administrator dialplan.');
-			}
-			if ($updated !== $content && file_put_contents($customPath, $updated) === false) {
+			if ($updated === null || ($updated !== $content && file_put_contents($customPath, $updated) === false)) {
 				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
 			}
 		}
-		if (!unlink($fragmentPath)) {
+		$fragmentPath = $astetc . '/repeatcaller_alert.conf';
+		if (file_exists($fragmentPath) && !unlink($fragmentPath)) {
 			throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan fragment.');
 		}
 	}

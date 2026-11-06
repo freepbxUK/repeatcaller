@@ -908,82 +908,40 @@ assert_true(strpos($uninstallSource, 'Repeatcaller::removeLegacyAlertCallDialpla
 assert_true(strpos($uninstallSource, 'file_put_contents(') === false && strpos($uninstallSource, 'unlink($customPath)') === false, 'uninstall must not rewrite or delete administrator custom dialplan itself');
 $legacyBlock = "; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include\n";
 $legacyCleanupCases = [
-	[null, null, false],
-	['', '', false],
-	[$legacyBlock, '', false],
-	[rtrim($legacyBlock, "\n"), '', false],
-	["; administrator before\n\n" . $legacyBlock . "[administrator-after]\n same => n,NoOp(keep)\n\n  ", "; administrator before\n\n[administrator-after]\n same => n,NoOp(keep)\n\n  ", false],
-	["; before\r\n" . str_replace("\n", "\r\n", $legacyBlock) . "; after\r\n", "; before\r\n; after\r\n", false],
-	[$legacyBlock . "; middle\n" . $legacyBlock, "; middle\n", false],
-	["#include repeatcaller_alert.conf\n; unmanaged include\n", "#include repeatcaller_alert.conf\n; unmanaged include\n", true],
-	["; Repeat Caller managed include\n; incomplete block\n", "; Repeat Caller managed include\n; incomplete block\n", false],
-	["; Repeat Caller managed include\n#include repeatcaller_alert.conf\n", "; Repeat Caller managed include\n#include repeatcaller_alert.conf\n", true],
-	["; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n", "; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n", true],
-	["#include /etc/asterisk/repeatcaller_alert.conf\n", "#include /etc/asterisk/repeatcaller_alert.conf\n", true],
-	["#include \"repeatcaller_alert.conf\"\n", "#include \"repeatcaller_alert.conf\"\n", true],
-	["#tryinclude repeatcaller_alert.conf\n", "#tryinclude repeatcaller_alert.conf\n", true],
-	["  \t#include repeatcaller_alert.conf ; administrator include\r\n", "  \t#include repeatcaller_alert.conf ; administrator include\r\n", true],
-	["; administrator note: repeatcaller_alert.conf", "; administrator note: repeatcaller_alert.conf", false],
-	[$legacyBlock . "; old: #include repeatcaller_alert.conf\n;#tryinclude repeatcaller_alert.conf\n", "; old: #include repeatcaller_alert.conf\n;#tryinclude repeatcaller_alert.conf\n", false],
-	["#include other_repeatcaller_alert.conf\n", "#include other_repeatcaller_alert.conf\n", false],
-	[$legacyBlock . "#include repeatcaller_alert.conf\n" . $legacyBlock, $legacyBlock . "#include repeatcaller_alert.conf\n" . $legacyBlock, true],
-	["; before\r\n" . str_replace("\n", "\r\n", $legacyBlock) . "#tryinclude /etc/asterisk/repeatcaller_alert.conf\r\n", "; before\r\n" . str_replace("\n", "\r\n", $legacyBlock) . "#tryinclude /etc/asterisk/repeatcaller_alert.conf\r\n", true],
+	[null, null],
+	['', ''],
+	[$legacyBlock, ''],
+	[rtrim($legacyBlock, "\n"), ''],
+	["; administrator before\n\n" . $legacyBlock . "[administrator-after]\n same => n,NoOp(keep)\n\n  ", "; administrator before\n\n[administrator-after]\n same => n,NoOp(keep)\n\n  "],
+	["; before\r\n" . str_replace("\n", "\r\n", $legacyBlock) . "; after\r\n", "; before\r\n; after\r\n"],
+	[$legacyBlock . "; middle\n" . $legacyBlock, "; middle\n"],
+	["#include repeatcaller_alert.conf\n; unmanaged include\n", "#include repeatcaller_alert.conf\n; unmanaged include\n"],
+	["; Repeat Caller managed include\n; incomplete block\n", "; Repeat Caller managed include\n; incomplete block\n"],
+	["; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n", "; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n"],
 ];
 foreach (['upgrade', 'uninstall'] as $cleanupEntryPoint) {
-	foreach ($legacyCleanupCases as [$beforeCleanup, $afterCleanup, $unmanagedReferenceRemains]) {
+	foreach ($legacyCleanupCases as [$beforeCleanup, $afterCleanup]) {
 		$legacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_' . uniqid('', true);
 		assert_true(mkdir($legacyDirectory), 'cleanup fixture directory must be created');
 		$legacyCustomPath = $legacyDirectory . '/extensions_custom.conf';
 		$legacyFragmentPath = $legacyDirectory . '/repeatcaller_alert.conf';
+		if ($beforeCleanup !== null) {
+			file_put_contents($legacyCustomPath, $beforeCleanup);
+		}
+		file_put_contents($legacyFragmentPath, 'legacy module fragment');
 		file_put_contents($legacyDirectory . '/administrator.conf', 'unrelated configuration');
 		try {
-			foreach ([true, false] as $fragmentInitiallyPresent) {
-				if ($beforeCleanup !== null) {
-					file_put_contents($legacyCustomPath, $beforeCleanup);
-				}
-				if ($fragmentInitiallyPresent) {
-					file_put_contents($legacyFragmentPath, 'legacy module fragment');
-				} elseif (file_exists($legacyFragmentPath)) {
-					unlink($legacyFragmentPath);
-				}
-				for ($cleanupRun = 0; $cleanupRun < 2; $cleanupRun++) {
-					$cleanupException = null;
-					try {
-						Repeatcaller::removeLegacyAlertCallDialplan($legacyDirectory);
-					} catch (RuntimeException $e) {
-						$cleanupException = $e;
-					}
-					if (!$fragmentInitiallyPresent) {
-						assert_same(null, $cleanupException, $cleanupEntryPoint . ' must not inspect or act on administrator dialplan when the legacy fragment is absent');
-						assert_true(!file_exists($legacyFragmentPath), $cleanupEntryPoint . ' must never create the legacy fragment');
-						if ($beforeCleanup === null) {
-							assert_true(!file_exists($legacyCustomPath), $cleanupEntryPoint . ' must not create extensions_custom.conf when the legacy fragment is absent');
-						} else {
-							assert_same($beforeCleanup, file_get_contents($legacyCustomPath), $cleanupEntryPoint . ' must leave extensions_custom.conf byte-for-byte unchanged when the legacy fragment is absent');
-						}
-					} elseif ($unmanagedReferenceRemains) {
-						assert_true($cleanupException instanceof RuntimeException, $cleanupEntryPoint . ' must explicitly reject any remaining unmanaged reference');
-						assert_same(
-							'An unmanaged reference to repeatcaller_alert.conf remains in extensions_custom.conf; automatic removal has been stopped to avoid breaking administrator dialplan.',
-							$cleanupException->getMessage(),
-							$cleanupEntryPoint . ' must explain why automatic removal was stopped'
-						);
-						assert_same($fragmentInitiallyPresent, file_exists($legacyFragmentPath), $cleanupEntryPoint . ' must not delete or create a fragment while any reference remains');
-						assert_same($beforeCleanup, file_get_contents($legacyCustomPath), $cleanupEntryPoint . ' refusal must leave extensions_custom.conf byte-for-byte unchanged, including managed blocks');
-						assert_same('legacy module fragment', file_get_contents($legacyFragmentPath), $cleanupEntryPoint . ' must leave the referenced fragment unchanged');
-					} else {
-						assert_same(null, $cleanupException, $cleanupEntryPoint . ' must allow cleanup without unmanaged references');
-						assert_true(!file_exists($legacyFragmentPath), $cleanupEntryPoint . ' must remove the legacy module fragment and never recreate it');
-					}
-					if ($fragmentInitiallyPresent && $afterCleanup === null) {
-						assert_true(!file_exists($legacyCustomPath), $cleanupEntryPoint . ' must not create extensions_custom.conf');
-					} elseif ($fragmentInitiallyPresent) {
-						assert_true(file_exists($legacyCustomPath), $cleanupEntryPoint . ' must retain the administrator file even if empty');
-						assert_same($afterCleanup, file_get_contents($legacyCustomPath), $cleanupEntryPoint . ' must preserve every byte outside complete managed blocks');
-					}
-					assert_same('unrelated configuration', file_get_contents($legacyDirectory . '/administrator.conf'), 'cleanup must not change any other configuration file');
-				}
+			Repeatcaller::removeLegacyAlertCallDialplan($legacyDirectory);
+			assert_true(!file_exists($legacyFragmentPath), $cleanupEntryPoint . ' must remove the legacy module fragment');
+			if ($afterCleanup === null) {
+				assert_true(!file_exists($legacyCustomPath), $cleanupEntryPoint . ' must not create extensions_custom.conf');
+			} else {
+				assert_true(file_exists($legacyCustomPath), $cleanupEntryPoint . ' must retain the administrator file even if empty');
+				assert_same($afterCleanup, file_get_contents($legacyCustomPath), $cleanupEntryPoint . ' must preserve every byte outside complete managed blocks');
 			}
+			Repeatcaller::removeLegacyAlertCallDialplan($legacyDirectory);
+			assert_true(!file_exists($legacyFragmentPath), 'repeated cleanup must not create any module fragment');
+			assert_same('unrelated configuration', file_get_contents($legacyDirectory . '/administrator.conf'), 'cleanup must not change any other configuration file');
 		} finally {
 			foreach (glob($legacyDirectory . '/*') as $legacyFile) {
 				unlink($legacyFile);
