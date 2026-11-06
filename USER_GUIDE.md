@@ -128,18 +128,16 @@ Alert reminder emails also start with the FreePBX System Identifier when it is a
 If you untick Caller ID managed elsewhere while Alert Call is enabled, Alert Call Caller ID becomes mandatory and the previous unsaved value is restored automatically if one was entered earlier in the session. Saving with Caller ID managed elsewhere still checked persists a blank Caller ID and permanently forgets the prior value.
 
 Internal SIP/PJSIP Alert Calls are intended to display **Repeat Caller** in
-either Caller ID mode, without an extra caller number. When FreePBX's
-called-channel SIP-header handler runs, the module sets only the local outgoing
-connected-line name on marked calls matching both a genuine device's technology
-and exact dial string. Callee Caller ID, caller numbers, and privacy flags are
-not changed. Custom devices, Local channels, and trunk endpoints without a
-matching genuine device record do not qualify. An endpoint configured as both
-a genuine device and a trunk remains a configuration-conflict risk to review.
+either Caller ID mode. The name is established on the originating channel
+before the destination is dialled, and after normal internal FreePBX identity
+rewrites where applicable. Existing numbers and privacy settings are retained;
+no originating extension or extra caller number is created. A secondary IP
+address beneath the primary name is acceptable.
 
-Outbound caller identity configuration and routing remain in place. Forwarding,
+The original name is restored before normal outbound caller identity processing,
+leaving external numbers, caller identity configuration and routing in place. Forwarding,
 Follow Me, mixed Ring All/Ordered calls, Keep Trying, and SIP redirects require
-live validation, including unchanged external identities. Some direct SIP
-redirects bypass the handler and may miss the internal label. Privacy,
+live validation, including unchanged external identities. Privacy,
 From-user overrides, and handset display policies remain under PBX and endpoint
 control; simulated channel tests do not establish actual SIP presentation.
 

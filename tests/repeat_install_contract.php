@@ -87,6 +87,7 @@ class ext_set extends CallerNameDialplanCommand {}
 class ext_goto extends CallerNameDialplanCommand {}
 class ext_return extends CallerNameDialplanCommand {}
 class ext_gosubif extends CallerNameDialplanCommand {}
+class ext_gosub extends CallerNameDialplanCommand {}
 class extension extends CallerNameDialplanCommand {}
 
 class CallerNameDialplan {
@@ -98,22 +99,29 @@ class CallerNameDialplan {
 	public function add(string $context, string $extension, string $label, CallerNameDialplanCommand $command): void {
 		$this->contexts[$context][] = ['extension' => $extension, 'label' => $label, 'command' => $command];
 	}
-	public function splice(string $context, string $extension, int $position, CallerNameDialplanCommand $command): void {
+	public function splice(string $context, string $extension, $position, CallerNameDialplanCommand $command, string $tag = '', int $offset = 0, bool $fixMultipleLabels = false): void {
 		$this->insertions[] = [$context, $extension, $position, $command];
-		array_splice($this->contexts[$context], $position, 0, [['label' => '', 'command' => $command]]);
+		if (!is_int($position)) {
+			$position = array_search($position, array_column($this->contexts[$context], 'label'), true);
+			assert_true($position !== false, 'a label-based insertion must target an existing FreePBX label');
+			$position += $offset;
+		}
+		if ($fixMultipleLabels && $tag !== '') {
+			foreach ($this->contexts[$context] as &$entry) {
+				if ($entry['label'] === $tag) {
+					$entry['label'] = '';
+				}
+			}
+			unset($entry);
+		}
+		array_splice($this->contexts[$context], $position, 0, [['label' => $tag, 'command' => $command]]);
 	}
 }
 
-function runCallerNameDialplan(array $commands, array $variables, array $devices): array {
-	$expand = static function (string $value) use (&$variables, $devices): string {
+function runOriginNameDialplan(array $commands, array $variables): array {
+	$expand = static function (string $value) use (&$variables): string {
 		while (strpos($value, '${') !== false) {
-			$value = preg_replace_callback('/\$\{([^{}]*)\}/', static function (array $match) use (&$variables, $devices): string {
-				if (preg_match('/^DB\(DEVICE\/(.*)\/(dial|tech)\)$/', $match[1], $deviceMatch)) {
-					return (string)($devices[$deviceMatch[1]][$deviceMatch[2]] ?? '');
-				}
-				if (preg_match('/^TOUPPER\((.*)\)$/', $match[1], $upperMatch)) {
-					return strtoupper($upperMatch[1]);
-				}
+			$value = preg_replace_callback('/\$\{([^{}]*)\}/', static function (array $match) use (&$variables): string {
 				assert_true(array_key_exists($match[1], $variables), 'caller-name simulation must recognize every variable: ' . $match[1]);
 				return (string)$variables[$match[1]];
 			}, $value);
@@ -135,8 +143,8 @@ function runCallerNameDialplan(array $commands, array $variables, array $devices
 		if ($command instanceof ext_return) {
 			return $variables;
 		} elseif ($command instanceof ext_set) {
-			assert_true(strpos($arguments[0], 'LOCAL(repeatcaller_') === 0 || $arguments[0] === 'CONNECTEDLINE(name,i)', 'caller-name subroutine must only write local scratch values and the inhibited connected-line name');
-			$variables[$arguments[0]] = $expand($arguments[1]);
+			assert_true(strpos($arguments[0], '__REPEATCALLER_') === 0 || $arguments[0] === 'CALLERID(name)', 'originating-name handling must only change caller name and inherited module bookkeeping');
+			$variables[ltrim($arguments[0], '_')] = $expand($arguments[1]);
 		} elseif ($command instanceof ext_gotoif) {
 			assert_true(preg_match('/^\$\["([^"]*)"(!=|=)"([^"]*)"\]$/', $expand($arguments[0]), $condition) === 1, 'caller-name simulation must recognize the generated condition');
 			$matches = $condition[2] === '=' ? $condition[1] === $condition[3] : $condition[1] !== $condition[3];
@@ -517,7 +525,7 @@ assert_true(strpos($installSource, 'Schema::install(') !== false, 'install.php m
 
 $moduleXml = file_get_contents($root . '/module.xml');
 assert_true($moduleXml !== false, 'module.xml should be readable');
-assert_true(strpos($moduleXml, '<version>1.2.1</version>') !== false, 'module version must declare 1.2.1 for the current release');
+assert_true(strpos($moduleXml, '<version>1.2.0</version>') !== false, 'module version must declare 1.2.0 for the current release');
 
 $schemaSource = file_get_contents($root . '/src/Schema.php');
 assert_true($schemaSource !== false, 'src/Schema.php should be readable');
@@ -668,11 +676,23 @@ $existingSipHeaderCommands = [
 	['label' => '', 'command' => new ext_return()],
 ];
 $callerNameDialplan->contexts['func-apply-sipheaders'] = $existingSipHeaderCommands;
+$originalUserCommands = [
+	['label' => '', 'command' => new CallerNameDialplanCommand('FreePBX caller identity selection')],
+	['label' => 'continue', 'command' => new CallerNameDialplanCommand('FreePBX post-selection processing')],
+	['label' => '', 'command' => new ext_return()],
+];
+$callerNameDialplan->contexts['macro-user-callerid'] = $originalUserCommands;
+$callerNameDialplan->contexts['macro-outbound-callerid'] = $existingSipHeaderCommands;
 $callerNameModule->doDialplanHook($callerNameDialplan, 'asterisk', 500);
-assert_same($existingSipHeaderCommands, array_slice($callerNameDialplan->contexts['func-apply-sipheaders'], 1), 'caller-name integration must preserve all existing SIP-header handler commands');
-assert_same(1, count($callerNameDialplan->insertions), 'caller-name integration must add just one call to the existing called-channel handler');
-assert_same(['func-apply-sipheaders', 's', 0], array_slice($callerNameDialplan->insertions[0], 0, 3), 'caller-name integration must use additive entry-point insertion, not replace Dial options or shared hooks');
-assert_same(['$["${REPEATCALLER_INTERNAL_ORIGIN}"="1"]', 'repeatcaller-alert-caller-name,s,1'], $callerNameDialplan->insertions[0][3]->arguments, 'only marked module-owned calls may invoke the caller-name subroutine');
+assert_same($existingSipHeaderCommands, $callerNameDialplan->contexts['func-apply-sipheaders'], 'originating-name integration must leave the entire called-channel SIP-header handler unchanged');
+assert_same(3, count($callerNameDialplan->insertions), 'originating-name integration must add only internal post-selection and external restoration calls');
+assert_same(['macro-user-callerid', 's', 0], array_slice($callerNameDialplan->insertions[0], 0, 3), 'external name restoration must precede normal external caller identity selection');
+assert_same(['$["${ARG2}"="EXTERNAL"]', 'repeatcaller-alert-origin-name,s,1', false, 'external'], $callerNameDialplan->insertions[0][3]->arguments, 'external processing must restore the original name through the normal FreePBX argument');
+assert_same(['macro-user-callerid', 's', 'continue'], array_slice($callerNameDialplan->insertions[1], 0, 3), 'internal name must be established after FreePBX identity rewriting');
+assert_same('continue', $callerNameDialplan->contexts['macro-user-callerid'][2]['label'], 'existing jumps to continue must execute the post-rewrite module call');
+assert_same('', $callerNameDialplan->contexts['macro-user-callerid'][3]['label'], 'the continue label must not remain duplicated on the old command');
+assert_same($originalUserCommands[0], $callerNameDialplan->contexts['macro-user-callerid'][1], 'FreePBX original identity selection must remain intact');
+assert_same($existingSipHeaderCommands, array_slice($callerNameDialplan->contexts['macro-outbound-callerid'], 1), 'trunk caller identity commands must be preserved');
 $missingSipHandler = new CallerNameDialplan();
 $callerNameModule->doDialplanHook($missingSipHandler, 'asterisk', 500);
 assert_true(!isset($missingSipHandler->contexts['func-apply-sipheaders']), 'a missing Core handler must not cause creation or replacement of a shared context');
@@ -681,75 +701,71 @@ $migratedInstructions = [];
 foreach ($legacyContexts as $legacyContext) {
 	assert_true(isset($missingSipHandler->contexts[$legacyContext]), 'all legacy contexts must be generated even if the optional shared SIP handler is missing');
 	foreach ($callerNameDialplan->contexts[$legacyContext] as $entry) {
+		if ($entry['command']->arguments[0] === 'Gosub(repeatcaller-alert-origin-name,s,1(internal))') {
+			continue;
+		}
 		$migratedInstructions[] = [$legacyContext, $entry['extension'], $entry['label'], $entry['command']->arguments[0]];
 	}
 }
 assert_same(86, count($migratedInstructions), 'all 86 legacy Alert Call instructions must be generated through BMO');
 assert_same('bb8df15817cce88e48c126b14816e9dd80bbce448718462f1305890aee81c074', hash('sha256', json_encode($migratedInstructions, JSON_UNESCAPED_SLASHES)), 'migration must preserve every legacy context, extension, label, application and argument');
-assert_true(strpos($controllerSource, 'CHANNEL(endpoint)') !== false && strpos($controllerSource, 'CHANNEL(pjsip,endpoint)') === false, 'BMO caller-name generation must use the supported PJSIP endpoint accessor');
+$launchApplications = array_map(static function (array $entry): string { return $entry['command']->arguments[0]; }, $callerNameDialplan->contexts['repeatcaller-alert-launch']);
+assert_same('Gosub(repeatcaller-alert-origin-name,s,1(internal))', $launchApplications[3], 'originating name must be established before the normal destination Dial');
+assert_true(strpos($launchApplications[4], 'Dial(Local/${EXTEN}@from-internal/n,,U(') === 0, 'destination routing and acknowledgement handling must remain unchanged after naming');
+assert_true(strpos($controllerSource, 'CONNECTEDLINE(') === false && !isset($callerNameDialplan->contexts['repeatcaller-alert-caller-name']), 'the obsolete connected-line mechanism and its context must be removed');
 $otherEngineDialplan = new CallerNameDialplan();
 $otherEngineDialplan->contexts['func-apply-sipheaders'] = $existingSipHeaderCommands;
 $callerNameModule->doDialplanHook($otherEngineDialplan, 'other', 500);
 assert_same([], $otherEngineDialplan->insertions, 'non-Asterisk engines must not receive caller-name integration');
-$callerNameCommands = $callerNameDialplan->contexts['repeatcaller-alert-caller-name'];
-$callerNameDevices = [
-	'201' => ['tech' => 'pjsip', 'dial' => 'PJSIP/201'],
-	'202' => ['tech' => 'sip', 'dial' => 'SIP/202'],
-	'203' => ['tech' => 'custom', 'dial' => 'Local/02079460000@from-internal'],
-	'204' => ['tech' => 'custom', 'dial' => 'PJSIP/carrier'],
-	'205' => ['tech' => 'custom', 'dial' => 'PJSIP/205'],
-	'206' => ['tech' => 'custom', 'dial' => 'SIP/206'],
-	'207' => ['dial' => 'PJSIP/207'],
-	'208' => ['tech' => 'sip', 'dial' => 'PJSIP/208'],
-	'209' => ['tech' => 'pjsip', 'dial' => 'PJSIP/carrier'],
-	'desk-phone-A' => ['tech' => 'pjsip', 'dial' => 'PJSIP/desk-phone-A'],
-];
-foreach (['', '+441234567890', '201'] as $callerNumber) {
+$callerNameCommands = $callerNameDialplan->contexts['repeatcaller-alert-origin-name'];
+foreach ([
+	['', ''], ['', '+441234567890'], ['', '201'],
+	['Original PBX name', ''], ['Original PBX name', '+441234567890'], ['Original PBX name', '201'],
+] as [$originalName, $callerNumber]) {
 	foreach ([['allowed_not_screened', 'allowed_not_screened'], ['prohib_not_screened', 'allowed_not_screened'], ['allowed_not_screened', 'prohib_not_screened'], ['unavailable', 'unavailable']] as [$namePresentation, $numberPresentation]) {
 		$channelIdentity = [
 			'REPEATCALLER_INTERNAL_ORIGIN' => '1',
-			'CALLERID(name)' => 'FreePBX callee name',
-			'CALLERID(num)' => '201',
-			'CONNECTEDLINE(name,i)' => 'FreePBX outgoing name',
+			'REPEATCALLER_ORIGINAL_NAME' => '',
+			'REPEATCALLER_ORIGINAL_NAME_SAVED' => '',
+			'REPEATCALLER_EXTERNAL_IDENTITY' => '',
+			'ARG1' => 'internal',
+			'CALLERID(name)' => $originalName,
+			'CALLERID(num)' => $callerNumber,
+			'CONNECTEDLINE(name)' => 'Existing connected name',
 			'CONNECTEDLINE(num)' => $callerNumber,
 			'CALLERID(name-pres)' => $namePresentation,
 			'CALLERID(num-pres)' => $numberPresentation,
 			'CONNECTEDLINE(name-pres)' => $namePresentation,
 			'CONNECTEDLINE(num-pres)' => $numberPresentation,
 		];
-		$attempts = [
-			['PJSIP', '201', true],
-			['SIP', '202', true],
-			['PJSIP', 'desk-phone-A', true],
-			['PJSIP', 'carrier', false],
-			['SIP', 'pstn', false],
-			['Local', '201', false],
-			['PJSIP', '', false],
-			['PJSIP', '203', false],
-			['PJSIP', '204', false],
-			['PJSIP', '205', false],
-			['SIP', '206', false],
-			['PJSIP', '207', false],
-			['PJSIP', '208', false],
-			['PJSIP', '209', false],
-			['PJSIP', '202', false],
-		];
-		foreach ($attempts as [$technology, $endpoint, $isInternal]) {
-			$before = $channelIdentity + ['CHANNEL(channeltype)' => $technology, 'CHANNEL(endpoint)' => $endpoint, 'CHANNEL(peername)' => $endpoint];
-			$after = runCallerNameDialplan($callerNameCommands, $before, $callerNameDevices);
-			$expectedName = $isInternal ? 'Repeat Caller' : $before['CONNECTEDLINE(name,i)'];
-			assert_same($expectedName, $after['CONNECTEDLINE(name,i)'], 'mixed channel snapshots must name only genuine internal devices: ' . $technology . '/' . $endpoint);
-			foreach ($before as $field => $value) {
-				if ($field !== 'CONNECTEDLINE(name,i)') {
-					assert_same($value, $after[$field], 'caller-name handling must preserve callee Caller ID, both numbers, all privacy flags and origin markers: ' . $field);
-				}
+		$internal = runOriginNameDialplan($callerNameCommands, $channelIdentity);
+		assert_same('Repeat Caller', $internal['CALLERID(name)'], 'the originating name must match the successful live test exactly');
+		assert_same($originalName, $internal['REPEATCALLER_ORIGINAL_NAME'], 'the original name, including a blank name, must be saved for external routing');
+		foreach ($channelIdentity as $field => $value) {
+			if (in_array($field, ['CALLERID(name)', 'REPEATCALLER_ORIGINAL_NAME', 'REPEATCALLER_ORIGINAL_NAME_SAVED'], true)) {
+				continue;
 			}
-			$before['REPEATCALLER_INTERNAL_ORIGIN'] = '';
-			assert_same($before, runCallerNameDialplan($callerNameCommands, $before, $callerNameDevices), 'unmarked calls must remain entirely unchanged');
+			assert_same($value, $internal[$field], 'originating-name handling must preserve numbers, privacy and connected-line values: ' . $field);
 		}
+		$afterFreepbxRewrite = $internal;
+		$afterFreepbxRewrite['CALLERID(name)'] = 'FreePBX extension name';
+		assert_same('Repeat Caller', runOriginNameDialplan($callerNameCommands, $afterFreepbxRewrite)['CALLERID(name)'], 'internal FreePBX full-identity rewriting must not defeat the originating name');
+		$externalLeg = $internal;
+		$externalLeg['ARG1'] = 'external';
+		$externalLeg = runOriginNameDialplan($callerNameCommands, $externalLeg);
+		assert_same($channelIdentity['CALLERID(name)'], $externalLeg['CALLERID(name)'], 'external routing must see the original originating name');
+		assert_same($callerNumber, $externalLeg['CALLERID(num)'], 'external restoration must never change caller numbers');
+		$externalLeg['CALLERID(name)'] = 'Normal outbound PBX policy';
+		$externalLeg['ARG1'] = 'internal';
+		assert_same('Normal outbound PBX policy', runOriginNameDialplan($callerNameCommands, $externalLeg)['CALLERID(name)'], 'the shared user-callerid continuation must not rename an external leg');
+		$externalLeg['ARG1'] = 'external';
+		assert_same('Normal outbound PBX policy', runOriginNameDialplan($callerNameCommands, $externalLeg)['CALLERID(name)'], 'later trunk processing must not undo existing outbound policy');
+		assert_same('Repeat Caller', $internal['CALLERID(name)'], 'an external child must not change its internal siblings or parent');
+		$channelIdentity['REPEATCALLER_INTERNAL_ORIGIN'] = '';
+		assert_same($channelIdentity, runOriginNameDialplan($callerNameCommands, $channelIdentity), 'unmarked calls must remain completely unchanged');
 	}
 }
-assert_true(strpos($installSource, 'CALLERID(') === false && strpos($installSource, 'CONNECTEDLINE(') === false, 'launch and playback contexts must not change parent caller identity');
+assert_true(strpos($installSource, 'CALLERID(') === false && strpos($installSource, 'CONNECTEDLINE(') === false, 'legacy cleanup must not inject caller identity');
 
 assert_true(strpos($installSource, 'Repeatcaller::removeLegacyAlertCallDialplan(') !== false, 'install and upgrade must invoke selective legacy cleanup');
 assert_true(strpos($installSource, 'file_put_contents(') === false && strpos($installSource, 'repeatcallerInstallDialplan') === false, 'install must not create a dialplan fragment or append a custom include');

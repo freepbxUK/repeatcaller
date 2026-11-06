@@ -142,7 +142,8 @@ and reload, inspect the launch, playback, summary, and caller-name contexts in
 FreePBX-generated `extensions_additional.conf`; fresh installs must not create
 `repeatcaller_alert.conf` or add a managed include to `extensions_custom.conf`.
 The install contract pins all 86 legacy context/extension/label/application
-instructions to their pre-migration digest, including DTMF and hangup paths.
+instructions to their pre-migration digest, including DTMF and hangup paths,
+excluding only the added originating-name Gosub before destination Dial.
 
 Upgrade and uninstall share selective legacy cleanup. Test a complete managed
 block before/after unrelated dialplan, LF and CRLF files, no final newline,
@@ -157,25 +158,23 @@ Its existing summary references to `repeatcaller-alert-accept-check` are
 preserved without inventing new dialplan behaviour. Report that pre-existing
 undefined reference separately if the legacy summary context is exercised.
 
-## 1.1.1 Internal Alert Call Caller Name
+## 1.2.0 Internal Alert Call Caller Name
 
 Run the install contract as well as the alerting, admin, and release contracts
-above. The install contract simulates the generated caller-name subroutine and
-checks additive integration without replacing the existing SIP-header handler:
+above. The install contract simulates the generated originating-name subroutine
+and verifies that the called-channel SIP-header handler is left unchanged:
 
 ```bash
 php tests/repeat_install_contract.php
 ```
 
-Coverage includes genuine device technology plus exact dial-string matching,
-custom/trunk identifier collisions, missing or mismatched records, unmarked
-calls, and independent mixed internal/external channel snapshots. It checks
-that only `CONNECTEDLINE(name,i)` changes while callee Caller ID, both numbers,
-and allowed, restricted, or unavailable privacy flags remain untouched.
-
-The PJSIP fixture exposes `CHANNEL(endpoint)`, the actual Asterisk endpoint
-accessor, rather than the unsupported `CHANNEL(pjsip,endpoint)` combination.
-It includes an alphanumeric endpoint independent of the caller number.
+Coverage checks exact `CALLERID(name)=Repeat Caller` on the originating channel,
+the launch Gosub before destination Dial, reapplication after internal FreePBX
+identity rewriting, original-name restoration before external processing, and
+independent mixed legs. Numbers, privacy flags and connected-line fields remain
+untouched; unmarked calls remain entirely unchanged. There is no final endpoint
+connected-line handler or device-number heuristic. AMI contracts check both
+number-selection modes and unchanged Local-channel routing.
 
 These simulations do not validate Asterisk execution, SIP headers, or handset
 display, marker inheritance, parent-channel isolation, forwarding, or redirects.
@@ -184,17 +183,18 @@ and 17, recording the Core, framework, Asterisk, driver, and handset versions:
 
 - Install the development version through the normal module upgrade path so
 	BMO hook registration is refreshed, then Apply Config. Inspect
-	`func-apply-sipheaders`: one guarded Gosub should
-	enter `repeatcaller-alert-caller-name`; all existing header commands and
+	`repeatcaller-alert-launch` and `repeatcaller-alert-origin-name`. Inspect the
+	additive calls in `macro-user-callerid` (external entry and the internal
+	`continue` label) and `macro-outbound-callerid`. Existing FreePBX commands and
 	other modules' additions must remain. Reload again and check for duplicates.
-- Confirm the generated subroutine reads `CHANNEL(endpoint)` for PJSIP and
-	`CHANNEL(peername)` for chan_sip. Use an actual Repeat Caller Alert Call:
-	an ordinary CLI Local originate without the module marker is deliberately
-	excluded. Check the matching call's log for execution of the name setter,
-	then inspect the initial endpoint INVITE and actual handset display.
+- Use a genuine marked Repeat Caller Alert Call rather than an unmarked CLI
+	call. Confirm the originating name setter executes before destination Dial.
+	The old `repeatcaller-alert-caller-name` context and connected-line setter
+	must be absent; `func-apply-sipheaders` must remain unchanged.
 - Call a standard PJSIP extension and, on 16 where installed, a chan_sip
 	extension with managed-elsewhere enabled. Confirm the handset and initial
-	INVITE display `Repeat Caller` without a fabricated number. Inspect From,
+	INVITE display `Repeat Caller` without a fabricated number. A secondary IP
+	address on the handset is acceptable. Inspect From,
 	P-Asserted-Identity and Remote-Party-ID where enabled.
 - Repeat with an explicit external caller number and with a number mapping to
 	a local user. Confirm FreePBX's earlier name rewrite does not defeat the
@@ -204,16 +204,10 @@ and 17, recording the Core, framework, Asterisk, driver, and handset versions:
 - Test a mixed rule with Ring All and Ordered, one Keep Trying progression,
 	acceptance cancelling siblings, and an introductory System Recording.
 - Test internal CF, Follow Me with simultaneous internal/external legs, and
-	handset SIP redirects to internal and external destinations. Internal channels
-	that execute the handler should have the label; external identities and parent
-	caller identity must match baseline. Capture redirect routing explicitly:
-	direct replacement channels can bypass the original `b()` handler and miss
-	the label. Record this limitation rather than assuming every redirect is covered.
-- Test custom devices whose identifiers and dial strings match trunk endpoint
-	names; confirm the `custom` device technology prevents any name assignment.
-- Review any endpoint configured as both a genuine SIP/PJSIP device and a
-	trunk. Positive device checks alone do not resolve this conflict; it is a
-	residual configuration risk, not a case covered by custom-device rejection.
+	handset SIP redirects to internal and external destinations. Internal devices
+	should display the application name; external identities must match baseline.
+	Capture custom routing that bypasses the normal FreePBX user/trunk identity
+	contexts explicitly rather than assuming it receives external restoration.
 - Check an unrelated internal call, custom device dial string, recording,
 	CDR account marker/filtering, and initial plus reminder alert attempts.
 	Internal CDR name fields may change; numbers and origin safeguards must not.

@@ -13,7 +13,7 @@ namespace FreePBX\modules;
 class Repeatcaller implements \BMO {
 
 	/** Fallback only. Authoritative version lives in module.xml. */
-	const VERSION = '1.2.1';
+	const VERSION = '1.2.0';
 	const CSRF_SESSION_KEY = 'repeatcaller_csrf_token';
 	const REPEAT_MODE_NEVER = 'never';
 	const REPEAT_MODE_FIVE_MINUTES = '5m';
@@ -103,25 +103,29 @@ class Repeatcaller implements \BMO {
 			return;
 		}
 		$this->addAlertCallDialplan($ext);
-		if (!$ext->section_exists('func-apply-sipheaders')) {
-			return;
-		}
 
-		$context = 'repeatcaller-alert-caller-name';
+		$context = 'repeatcaller-alert-origin-name';
 		$ext->add($context, 's', '', new \ext_gotoif('$["${REPEATCALLER_INTERNAL_ORIGIN}"!="1"]', 'done'));
-		$ext->add($context, 's', '', new \ext_set('LOCAL(repeatcaller_tech)', '${CHANNEL(channeltype)}'));
-		$ext->add($context, 's', '', new \ext_gotoif('$["${LOCAL(repeatcaller_tech)}"="PJSIP"]', 'pjsip'));
-		$ext->add($context, 's', '', new \ext_gotoif('$["${LOCAL(repeatcaller_tech)}"="SIP"]', 'sip', 'done'));
-		$ext->add($context, 's', 'pjsip', new \ext_set('LOCAL(repeatcaller_endpoint)', '${CHANNEL(endpoint)}'));
-		$ext->add($context, 's', '', new \ext_goto('check'));
-		$ext->add($context, 's', 'sip', new \ext_set('LOCAL(repeatcaller_endpoint)', '${CHANNEL(peername)}'));
-		$ext->add($context, 's', 'check', new \ext_gotoif('$["${LOCAL(repeatcaller_endpoint)}"=""]', 'done'));
-		$ext->add($context, 's', '', new \ext_gotoif('$["${TOUPPER(${DB(DEVICE/${LOCAL(repeatcaller_endpoint)}/tech)})}"!="${LOCAL(repeatcaller_tech)}"]', 'done'));
-		$ext->add($context, 's', '', new \ext_gotoif('$["${DB(DEVICE/${LOCAL(repeatcaller_endpoint)}/dial)}"!="${LOCAL(repeatcaller_tech)}/${LOCAL(repeatcaller_endpoint)}"]', 'done'));
-		$ext->add($context, 's', '', new \ext_set('CONNECTEDLINE(name,i)', 'Repeat Caller'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${ARG1}"="external"]', 'external'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${REPEATCALLER_EXTERNAL_IDENTITY}"="1"]', 'done'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${REPEATCALLER_ORIGINAL_NAME_SAVED}"="1"]', 'name'));
+		$ext->add($context, 's', '', new \ext_set('__REPEATCALLER_ORIGINAL_NAME', '${CALLERID(name)}'));
+		$ext->add($context, 's', '', new \ext_set('__REPEATCALLER_ORIGINAL_NAME_SAVED', '1'));
+		$ext->add($context, 's', 'name', new \ext_set('CALLERID(name)', 'Repeat Caller'));
+		$ext->add($context, 's', '', new \ext_goto('done'));
+		$ext->add($context, 's', 'external', new \ext_gotoif('$["${REPEATCALLER_ORIGINAL_NAME_SAVED}"!="1"]', 'done'));
+		$ext->add($context, 's', '', new \ext_gotoif('$["${REPEATCALLER_EXTERNAL_IDENTITY}"="1"]', 'done'));
+		$ext->add($context, 's', '', new \ext_set('CALLERID(name)', '${REPEATCALLER_ORIGINAL_NAME}'));
+		$ext->add($context, 's', '', new \ext_set('__REPEATCALLER_EXTERNAL_IDENTITY', '1'));
 		$ext->add($context, 's', 'done', new \ext_return());
 
-		$ext->splice('func-apply-sipheaders', 's', 0, new \ext_gosubif('$["${REPEATCALLER_INTERNAL_ORIGIN}"="1"]', $context . ',s,1'));
+		if ($ext->section_exists('macro-user-callerid')) {
+			$ext->splice('macro-user-callerid', 's', 0, new \ext_gosubif('$["${ARG2}"="EXTERNAL"]', $context . ',s,1', false, 'external'));
+			$ext->splice('macro-user-callerid', 's', 'continue', new \ext_gosub('1', 's', $context, 'internal'), 'continue', 0, true);
+		}
+		if ($ext->section_exists('macro-outbound-callerid')) {
+			$ext->splice('macro-outbound-callerid', 's', 0, new \ext_gosub('1', 's', $context, 'external'));
+		}
 	}
 
 	private function addAlertCallDialplan($ext): void {
@@ -130,6 +134,7 @@ class Repeatcaller implements \BMO {
 exten => _X.,1,NoOp(Repeat Caller outbound alert for ${EXTEN})
  same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/launch_channel)=${CHANNEL(name)})
  same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/launch_uniqueid)=${CHANNEL(uniqueid)})
+ same => n,Gosub(repeatcaller-alert-origin-name,s,1(internal))
  same => n,Dial(Local/${EXTEN}@from-internal/n,,U(repeatcaller-alert-playback^${REPEATCALLER_PLAYBACK_TARGET}^${IF($["${REPEATCALLER_PLAYBACK_LANGUAGE}"=""]?${CHANNEL(language)}:${REPEATCALLER_PLAYBACK_LANGUAGE})}^${REPEATCALLER_ALERT_HISTORY_ID}^${REPEATCALLER_INCIDENT_ID}^${REPEATCALLER_ALERT_RECIPIENT}^${REPEATCALLER_SUMMARY_MODE}^${REPEATCALLER_SUMMARY_CALL_COUNT}^${REPEATCALLER_SUMMARY_THRESHOLD}^${REPEATCALLER_SUMMARY_WINDOW_MINUTES}^${REPEATCALLER_SUMMARY_CALLER_KIND}^${REPEATCALLER_SUMMARY_CALLER_VALUE}^${REPEATCALLER_SUMMARY_DID_VALUE}^${REPEATCALLER_RECORDING_LANGUAGE}))
  same => n,Set(REPEATCALLER_DIALSTATUS_REPORTED=1)
  same => n,AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},dialstatus,${REPEATCALLER_ALERT_RECIPIENT},${DIALSTATUS},${HANGUPCAUSE})
