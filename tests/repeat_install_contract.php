@@ -517,7 +517,7 @@ assert_true(strpos($installSource, 'Schema::install(') !== false, 'install.php m
 
 $moduleXml = file_get_contents($root . '/module.xml');
 assert_true($moduleXml !== false, 'module.xml should be readable');
-assert_true(strpos($moduleXml, '<version>1.1.1</version>') !== false, 'module version must declare 1.1.1 for the current release');
+assert_true(strpos($moduleXml, '<version>1.2.1</version>') !== false, 'module version must declare 1.2.1 for the current release');
 
 $schemaSource = file_get_contents($root . '/src/Schema.php');
 assert_true($schemaSource !== false, 'src/Schema.php should be readable');

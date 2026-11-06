@@ -2151,6 +2151,57 @@ assert_true($repositoryClearWorkflow->clearSuppressedIncidentHistory((int)$secon
 	assert_same(2, count($productionCalls->calls), 'the new episode must initiate its own Alert Call');
 	assert_same($productionHistory, $productionDb->query('SELECT * FROM repeatcaller_incident_alert_history WHERE incident_id = ' . $productionIncident . ' ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), 'closure and a new episode must not alter accepted incident notification history');
 
+	foreach (['any', 'withheld_only'] as $anonymousCallerMode) {
+		foreach ([0, 30] as $anonymousSuppression) {
+			[$anonymousDb, $anonymousRepository] = create_runtime_environment(':memory:', '2026-07-13 09:02:30');
+			$anonymousClock = new InvertTestClock('2026-07-13 09:02:30');
+			$anonymousScanner = new CdrScanner($anonymousDb, $anonymousClock);
+			$anonymousRuntime = new BackgroundProcessor($anonymousDb, $anonymousRepository, $anonymousScanner, $anonymousClock);
+			$anonymousEmails = new FakeEmailSender();
+			$anonymousCalls = new FakeCallSender();
+			$anonymousAlerts = new IncidentAlertProcessor($anonymousRepository, $anonymousEmails, $anonymousClock, $anonymousCalls);
+			insert_route($anonymousDb, '18005550001', '', 'Anonymous route');
+			$anonymousRule = insert_rule($anonymousDb, [
+				'name' => 'Anonymous lifecycle', 'threshold_count' => 2, 'observation_window_minutes' => 5,
+				'caller_mode' => $anonymousCallerMode, 'suppression_minutes_override' => $anonymousSuppression,
+				'email_enabled' => 1, 'email_recipients' => 'alerts@example.invalid',
+				'alert_call_enabled' => 1, 'alert_call_destinations' => '201', 'alert_reminder_mode_override' => '5m',
+				'schedules' => [['day' => 1, 'start' => '09:00', 'end' => '17:00']],
+			]);
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-one', 'calldate' => '2026-07-13 09:01:00', 'src' => 'anonymous', 'clid' => '"Anonymous" <anonymous>']);
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-one', 'calldate' => '2026-07-13 09:01:02', 'src' => 'anonymous', 'clid' => '"Anonymous" <anonymous>', 'channel' => 'Local/201@from-internal']);
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-two', 'calldate' => '2026-07-13 09:02:00', 'src' => 'restricted', 'clid' => '"Private" <restricted>']);
+			$anonymousSummary = $anonymousRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+			assert_same(2, $anonymousSummary['new_journeys'], 'anonymous call legs must collapse into two distinct tracked journeys');
+			assert_same(1, $anonymousSummary['incidents_created'], 'anonymous calls must meet the real detector threshold in ' . $anonymousCallerMode);
+			$anonymousIncident = $anonymousDb->query('SELECT * FROM repeatcaller_incidents')->fetch(PDO::FETCH_ASSOC);
+			assert_same(1, (int)$anonymousIncident['withheld_caller'], 'anonymous incidents must preserve the withheld marker');
+			assert_same(null, $anonymousIncident['caller_normalized'], 'anonymous incidents must not claim a known telephone number');
+			assert_true(strpos($anonymousIncident['subject_key'], 'withheld|route:') === 0, 'anonymous subjects must be grouped by the shared withheld identity and inbound route');
+			assert_same(2, (int)$anonymousDb->query("SELECT COUNT(*) FROM repeatcaller_seen_calls WHERE caller_normalized = 'withheld'")->fetchColumn(), 'formatted restricted identities must survive pre-evaluation journey reservation');
+			$anonymousAlerts->run(['alert_history_prune_policy' => 'never']);
+			assert_same(1, count($anonymousEmails->calls), 'a qualifying anonymous incident must deliver its initial email');
+			assert_same(1, count($anonymousCalls->calls), 'a qualifying anonymous incident must initiate its initial Alert Call');
+			assert_true($anonymousRepository->acceptActiveIncident((int)$anonymousIncident['id'], 'operator', '2026-07-13 09:03:00', 'gui'), 'anonymous incidents must follow normal acceptance');
+			$anonymousClock->now = '2026-07-13 09:04:30';
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-three', 'calldate' => '2026-07-13 09:04:00', 'src' => '', 'clid' => '"Unavailable" <>']);
+			$anonymousRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+			$anonymousAlerts->run(['alert_history_prune_policy' => 'never']);
+			assert_same(3, (int)$anonymousDb->query('SELECT matched_call_count FROM repeatcaller_incidents')->fetchColumn(), 'continued anonymous activity must update the accepted rolling count');
+			assert_same(1, count($anonymousEmails->calls), 'anonymous grouping must not bypass acceptance');
+			foreach (['09:20:00', '09:21:00'] as $anonymousIndex => $anonymousTime) {
+				$anonymousClock->now = '2026-07-13 ' . $anonymousTime;
+				insert_cdr($anonymousDb, ['linkedid' => 'anonymous-rearm-' . $anonymousIndex, 'calldate' => $anonymousClock->now, 'src' => '', 'clid' => 'unknown']);
+				$anonymousRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+				$anonymousAlerts->run(['alert_history_prune_policy' => 'never']);
+			}
+			$anonymousExpectedIncidents = $anonymousSuppression === 0 ? 2 : 1;
+			assert_same($anonymousExpectedIncidents, (int)$anonymousDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'anonymous rearming must respect the existing suppression lifecycle');
+			assert_same($anonymousExpectedIncidents, count($anonymousEmails->calls), 'only permitted fresh anonymous incidents may generate new initial alerts');
+			assert_same($anonymousSuppression === 0 ? 0 : 1, count($anonymousRepository->loadSuppressedIncidentHistory()), 'active suppression must record the blocked new anonymous episode');
+		}
+	}
+
 	$dbPath4 = tempnam(sys_get_temp_dir(), 'repeatcaller_runtime_');
 	if ($dbPath4 === false) {
 		throw new RuntimeException('Unable to create fourth runtime contract SQLite file');

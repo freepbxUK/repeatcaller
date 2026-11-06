@@ -13,7 +13,7 @@ namespace FreePBX\modules;
 class Repeatcaller implements \BMO {
 
 	/** Fallback only. Authoritative version lives in module.xml. */
-	const VERSION = '1.2.0';
+	const VERSION = '1.2.1';
 	const CSRF_SESSION_KEY = 'repeatcaller_csrf_token';
 	const REPEAT_MODE_NEVER = 'never';
 	const REPEAT_MODE_FIVE_MINUTES = '5m';
@@ -733,11 +733,27 @@ CONF;
 			];
 		}
 
+		$message = _('Repeat Caller monitor run failed. Check logs.');
+		if (!empty($result['status'])) {
+			if (empty($result['ran'])) {
+				$message = _('Repeat Caller monitoring is disabled; no processing was performed.');
+			} else {
+				$runtime = $result['runtime_summary'] ?? [];
+				$alerts = $result['alert_summary'] ?? [];
+				$message = sprintf(
+					_('Repeat Caller monitor run completed: %d inbound journeys, %d new journeys, %d incidents created, %d incidents updated, %d emails sent, %d Alert Calls initiated.'),
+					(int)($runtime['inbound_journeys'] ?? 0), (int)($runtime['new_journeys'] ?? 0),
+					(int)($runtime['incidents_created'] ?? 0), (int)($runtime['incidents_updated'] ?? 0),
+					(int)($alerts['email_sent'] ?? 0), (int)($alerts['alert_call_sent'] ?? 0)
+				);
+			}
+		}
+
 		return [
 			'status' => !empty($result['status']),
 			'already_running' => false,
 			'ran' => !empty($result['ran']),
-			'message' => !empty($result['status']) ? _('Repeat Caller monitor run completed.') : _('Repeat Caller monitor run failed. Check logs.'),
+			'message' => $message,
 			'runtimeSummary' => $result['runtime_summary'] ?? [],
 			'alertSummary' => $result['alert_summary'] ?? [],
 			'engineStatus' => $this->rcEngineStatus($settings),

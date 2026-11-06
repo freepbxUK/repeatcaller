@@ -1257,6 +1257,25 @@ assert_true(strpos($classSource, "'Account' => 'repeatcaller_alert_internal'") !
 assert_true(strpos($classSource, 'REPEATCALLER_INTERNAL_ORIGIN=1,__REPEATCALLER_INTERNAL_ORIGIN=1') !== false, 'alert call originate variables should carry explicit internal-origin marker flags for module-owned legs');
 assert_true(strpos($classSource, 'REPEATCALLER_RECORDING_LANGUAGE=') !== false, 'alert call originate must carry System Recording language separately from the global generated-message language');
 assert_true(strpos($classSource, 'if ($callerId !== \'\') {') !== false && strpos($classSource, '$params[\'CallerID\'] = $callerId;') !== false, 'originate should only include CallerID when Repeat Caller is explicitly setting a nonblank value');
+$savedAstman = $GLOBALS['astman'] ?? null;
+$originateManager = new FakeAstman();
+$GLOBALS['astman'] = $originateManager;
+foreach (['201', '02079460000'] as $originateDestination) {
+	foreach (['', '+441234567890'] as $originateNumber) {
+		$originateResult = $repeatcaller->sendAlertCall($originateDestination, '', $originateNumber, ['history_id' => 42, 'incident_id' => 12]);
+		assert_true(!empty($originateResult['status']), 'both internal and external destinations must retain the normal AMI originate path');
+		$originateRequest = end($originateManager->requests);
+		assert_same('Originate', $originateRequest['action'], 'Alert Calls must use AMI Originate');
+		assert_same('Local/' . $originateDestination . '@repeatcaller-alert-launch/n', $originateRequest['params']['Channel'], 'caller presentation must not bypass normal Local/FreePBX routing');
+		assert_same($originateNumber !== '', array_key_exists('CallerID', $originateRequest['params']), 'managed-elsewhere Caller ID must remain omitted rather than replaced');
+		if ($originateNumber !== '') {
+			assert_same($originateNumber, $originateRequest['params']['CallerID'], 'explicit caller numbers must remain byte-for-byte unchanged');
+		}
+		assert_true(strpos($originateRequest['params']['Variable'], '__REPEATCALLER_INTERNAL_ORIGIN=1') !== false, 'AMI must retain the inherited marker for final receiving-channel checks');
+		assert_true(strpos($originateRequest['params']['Variable'], 'CALLERID(') === false && strpos($originateRequest['params']['Variable'], 'CONNECTEDLINE(') === false, 'AMI must not inject identity overrides affecting external calls');
+	}
+}
+$GLOBALS['astman'] = $savedAstman;
 $alertProcessorSource = file_get_contents(__DIR__ . '/../src/IncidentAlertProcessor.php');
 assert_true($alertProcessorSource !== false, 'IncidentAlertProcessor.php should be readable for system identifier contract checks');
 assert_true(strpos($alertProcessorSource, "FreePBX::Config()->get('FREEPBX_SYSTEM_IDENT')") !== false, 'email output should source the system identifier from the supported FreePBX Config API');

@@ -1,4 +1,4 @@
-# Repeat Caller 1.2.0 for FreePBX 16 and 17
+# Repeat Caller 1.2.1 for FreePBX 16 and 17
 
 Repeat Caller turns qualifying inbound call activity into actionable incidents
 on FreePBX/PBXact. Repeat mode detects when the same caller reaches a configured
@@ -574,6 +574,16 @@ Matching can include:
 Subject identity is tracked per rule and matched caller/route context so the
 same rule can independently track separate journeys.
 
+Any caller includes recognised anonymous/withheld identities unless Exclude
+withheld callers is selected. Withheld-only selects those identities; specific
+telephone-number lists do not identify anonymous callers. Missing Caller ID and
+standard anonymous, withheld, restricted, unavailable, private, or unknown
+markers, including formatted CDR name/number fields, share one withheld subject
+per rule and inbound route. They are counted as separate call journeys, not as
+separately identifiable people. A visible number in the CDR remains a visible
+caller even if its display name says Anonymous. Malformed or provider-specific
+identities and missing DID data still require inspection of the original CDRs.
+
 Incident lifecycle behaviour includes:
 
 - creating incidents only when rule conditions are met
@@ -1124,6 +1134,17 @@ Future release consideration:
 
 ## Release History
 
+### 1.2.1, patch release, 6 November 2026
+
+- Includes withheld calls in Any caller rules unless explicitly excluded and
+  recognises restricted and formatted anonymous CDR identities before matching.
+- Preserves shared withheld grouping by rule/route, rolling counts, acceptance,
+  suppression, schedules, DID filtering, and call-journey deduplication.
+- Reports Run Now execution counts and distinguishes a disabled monitor from a
+  completed run. Run Now does not replay already processed calls or bypass rules.
+- Extends anonymous lifecycle, real manual-run, and AMI Caller ID preservation
+  contracts. Actual SIP identity and handset presentation require live testing.
+
 ### 1.2.0, minor release, 20 October 2026
 
 - Moves the complete existing Alert Call dialplan into FreePBX BMO generation,
@@ -1147,7 +1168,7 @@ Future release consideration:
   mixed, custom, unmarked, and privacy-state channel snapshots. Forwarding,
   redirects, and actual SIP presentation remain live PBX test requirements.
 
-### 1.1.0, first signed FreePBX UK release, 20 October 2026
+### 1.1.0, minor release, 20 October 2026
 
 - First signed FreePBX UK release, published from the official
   `freepbxUK/repeatcaller` repository.
