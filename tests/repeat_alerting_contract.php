@@ -106,11 +106,12 @@ assert_true(strpos($installSource, 'U(repeatcaller-alert-playback^${REPEATCALLER
 assert_true(strpos($installSource, 'AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,${REPEATCALLER_ALERT_RECIPIENT},${ARG1},${ARG6},${ARG7},${ARG8},${ARG9},${ARG10},${ARG11},${ARG12},${ARG13})') !== false, 'generated alert-playback dialplan must delegate answered-call interaction to one recording-language-aware AGI session');
 assert_true(strpos($installSource, 'Read(REPEATCALLER_DTMF') === false, 'answered-call interaction must no longer depend on dialplan Read() collection');
 assert_true(strpos($installSource, 'While($[') === false, 'response loop must be finite and must not rely on an unbounded While retry structure');
-assert_true(strpos($installSource, '[repeatcaller-alert-summary]') !== false, 'generated dialplan may retain the summary helper context for compatibility even though answered-call interaction is now AGI-owned');
+assert_true(strpos($installSource, '[repeatcaller-alert-summary]') === false, 'generated dialplan must omit the obsolete summary helper now that answered-call interaction is AGI-owned');
+assert_true(strpos($installSource, 'repeatcaller-alert-accept-check') === false, 'generated dialplan must not reference the undefined legacy acceptance-check subroutine');
 assert_true(strpos($installSource, 'exten => remote_accepted,1,Set(REPEATCALLER_ALERT_COMPLETED=1)') !== false, 'generated dialplan must expose a dedicated remote_accepted extension so other answered callers can be redirected out immediately on remote acceptance');
 assert_true(strpos($installSource, 'exten => remote_accepted,1,Set(REPEATCALLER_ALERT_COMPLETED=1)') !== false, 'already answered concurrent callers must be routed to thank-you and goodbye once the incident is accepted elsewhere');
-assert_true(strpos($installSource, 'exten => h,1,GotoIf($["${REPEATCALLER_ALERT_COMPLETED}"="1"]?done)') !== false, 'hangup handling must preserve accepted, declined, and third-attempt no-response terminal outcomes');
-preg_match('/\[repeatcaller-alert-playback\]([\s\S]*?)\[repeatcaller-alert-summary\]/', $installSource, $playbackMatch);
+assert_true(strpos($installSource, 'AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,') !== false && strpos($installSource, 'same => n,Hangup()') !== false, 'answered playback must leave terminal response and hangup disposition to the interactive AGI session');
+preg_match('/\[repeatcaller-alert-playback\]([\s\S]*)$/', $installSource, $playbackMatch);
 assert_true(!empty($playbackMatch[1]), 'generated playback context should be present for remote-accept prompt regression checks');
 $playbackBlock = $playbackMatch[1];
 preg_match('/exten => remote_accepted,1,Set\(REPEATCALLER_ALERT_COMPLETED=1\)([\s\S]*?)exten => 1,1,Goto\(s,remote_accepted\)/', $playbackBlock, $remoteAcceptedMatch);

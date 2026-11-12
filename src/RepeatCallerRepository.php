@@ -3010,7 +3010,8 @@ final class RepeatCallerRepository {
 			}
 
 			$subjectState = $this->loadSubjectState($ruleId, $subjectKey) ?? [];
-			$subjectState['active_incident_id'] = $newMinutes <= 0 ? ($incidentId > 0 ? $incidentId : null) : null;
+			$acceptedIncident = is_array($incident) && (string)($incident['state'] ?? '') === 'accepted';
+			$subjectState['active_incident_id'] = $incidentId > 0 && ($newMinutes <= 0 || $acceptedIncident) ? $incidentId : null;
 			$subjectState['suppression_expires_at'] = $newMinutes <= 0 ? null : $this->suppressionExpiryForStart($startAt, $newMinutes);
 			$subjectState['last_evaluated_at'] = $now;
 			$subjectState['updated_at'] = $now;
@@ -3023,7 +3024,7 @@ final class RepeatCallerRepository {
 						 active_subject_key = ?,
 						 suppression_expires_at = ?,
 						 updated_at = ?
-					 WHERE id = ?'
+					 WHERE id = ? AND state <> ?'
 				);
 				$updateStmt->execute([
 					$newMinutes <= 0 ? 'active' : 'suppressed',
@@ -3031,6 +3032,18 @@ final class RepeatCallerRepository {
 					$this->nullableString($newMinutes <= 0 ? null : $this->suppressionExpiryForStart($startAt, $newMinutes)),
 					$now,
 					$incidentId,
+					'accepted',
+				]);
+				$acceptedUpdateStmt = $this->pdo->prepare(
+					'UPDATE repeatcaller_incidents
+					 SET suppression_expires_at = ?, updated_at = ?
+					 WHERE id = ? AND state = ?'
+				);
+				$acceptedUpdateStmt->execute([
+					$this->nullableString($newMinutes <= 0 ? null : $this->suppressionExpiryForStart($startAt, $newMinutes)),
+					$now,
+					$incidentId,
+					'accepted',
 				]);
 			}
 		}

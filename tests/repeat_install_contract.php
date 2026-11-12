@@ -696,7 +696,7 @@ assert_same($existingSipHeaderCommands, array_slice($callerNameDialplan->context
 $missingSipHandler = new CallerNameDialplan();
 $callerNameModule->doDialplanHook($missingSipHandler, 'asterisk', 500);
 assert_true(!isset($missingSipHandler->contexts['func-apply-sipheaders']), 'a missing Core handler must not cause creation or replacement of a shared context');
-$legacyContexts = ['repeatcaller-alert-launch', 'repeatcaller-alert-playback', 'repeatcaller-alert-summary'];
+$legacyContexts = ['repeatcaller-alert-launch', 'repeatcaller-alert-playback'];
 $migratedInstructions = [];
 foreach ($legacyContexts as $legacyContext) {
 	assert_true(isset($missingSipHandler->contexts[$legacyContext]), 'all legacy contexts must be generated even if the optional shared SIP handler is missing');
@@ -707,8 +707,9 @@ foreach ($legacyContexts as $legacyContext) {
 		$migratedInstructions[] = [$legacyContext, $entry['extension'], $entry['label'], $entry['command']->arguments[0]];
 	}
 }
-assert_same(86, count($migratedInstructions), 'all 86 legacy Alert Call instructions must be generated through BMO');
-assert_same('bb8df15817cce88e48c126b14816e9dd80bbce448718462f1305890aee81c074', hash('sha256', json_encode($migratedInstructions, JSON_UNESCAPED_SLASHES)), 'migration must preserve every legacy context, extension, label, application and argument');
+assert_same(32, count($migratedInstructions), 'all supported legacy launch and playback instructions must be generated through BMO');
+assert_same('828e702fcb3d54b7916c849617fb9433f5774f6c64c828cef0b6b84ed8265c0b', hash('sha256', json_encode($migratedInstructions, JSON_UNESCAPED_SLASHES)), 'migration must preserve every supported launch and playback extension, label, application and argument');
+assert_true(strpos($controllerSource, 'repeatcaller-alert-accept-check') === false, 'generated dialplan must not retain calls to the undefined legacy acceptance-check subroutine');
 $launchApplications = array_map(static function (array $entry): string { return $entry['command']->arguments[0]; }, $callerNameDialplan->contexts['repeatcaller-alert-launch']);
 assert_same('Gosub(repeatcaller-alert-origin-name,s,1(internal))', $launchApplications[3], 'originating name must be established before the normal destination Dial');
 assert_true(strpos($launchApplications[4], 'Dial(Local/${EXTEN}@from-internal/n,,U(') === 0, 'destination routing and acknowledgement handling must remain unchanged after naming');
@@ -931,9 +932,8 @@ $legacyCleanupCases = [
 	["; administrator before\n\n" . $legacyBlock . "[administrator-after]\n same => n,NoOp(keep)\n\n  ", "; administrator before\n\n[administrator-after]\n same => n,NoOp(keep)\n\n  "],
 	["; before\r\n" . str_replace("\n", "\r\n", $legacyBlock) . "; after\r\n", "; before\r\n; after\r\n"],
 	[$legacyBlock . "; middle\n" . $legacyBlock, "; middle\n"],
-	["#include repeatcaller_alert.conf\n; unmanaged include\n", "#include repeatcaller_alert.conf\n; unmanaged include\n"],
+	["; #include repeatcaller_alert.conf\n; unmanaged include\n", "; #include repeatcaller_alert.conf\n; unmanaged include\n"],
 	["; Repeat Caller managed include\n; incomplete block\n", "; Repeat Caller managed include\n; incomplete block\n"],
-	["; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n", "; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n"],
 ];
 foreach (['upgrade', 'uninstall'] as $cleanupEntryPoint) {
 	foreach ($legacyCleanupCases as [$beforeCleanup, $afterCleanup]) {
@@ -965,6 +965,54 @@ foreach (['upgrade', 'uninstall'] as $cleanupEntryPoint) {
 			rmdir($legacyDirectory);
 		}
 	}
+}
+$unmanagedLegacyReferences = [
+	"#include repeatcaller_alert.conf\n",
+	"#include /etc/asterisk/repeatcaller_alert.conf\n",
+	"#include \"repeatcaller_alert.conf\"\n",
+	"#tryinclude repeatcaller_alert.conf\n",
+	" \t#include repeatcaller_alert.conf ; administrator include\r\n",
+	"; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n",
+	$legacyBlock . "#include repeatcaller_alert.conf\n" . $legacyBlock,
+];
+foreach (['upgrade', 'uninstall'] as $cleanupEntryPoint) {
+	foreach ($unmanagedLegacyReferences as $beforeCleanup) {
+		$legacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_ref_' . uniqid('', true);
+		assert_true(mkdir($legacyDirectory), 'unmanaged-reference fixture directory must be created');
+		$legacyCustomPath = $legacyDirectory . '/extensions_custom.conf';
+		$legacyFragmentPath = $legacyDirectory . '/repeatcaller_alert.conf';
+		file_put_contents($legacyCustomPath, $beforeCleanup);
+		file_put_contents($legacyFragmentPath, 'legacy module fragment');
+		try {
+			$cleanupException = null;
+			try {
+				Repeatcaller::removeLegacyAlertCallDialplan($legacyDirectory);
+			} catch (RuntimeException $e) {
+				$cleanupException = $e;
+			}
+			assert_true($cleanupException instanceof RuntimeException, $cleanupEntryPoint . ' must refuse cleanup while an unmanaged reference remains');
+			assert_true(strpos($cleanupException->getMessage(), 'An unmanaged reference to repeatcaller_alert.conf remains') === 0, $cleanupEntryPoint . ' refusal must explain the remaining reference');
+			assert_same($beforeCleanup, file_get_contents($legacyCustomPath), $cleanupEntryPoint . ' refusal must leave administrator dialplan byte-for-byte unchanged');
+			assert_same('legacy module fragment', file_get_contents($legacyFragmentPath), $cleanupEntryPoint . ' refusal must retain the referenced fragment');
+		} finally {
+			foreach (glob($legacyDirectory . '/*') as $legacyFile) {
+				unlink($legacyFile);
+			}
+			rmdir($legacyDirectory);
+		}
+	}
+}
+$missingFragmentDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_missing_' . uniqid('', true);
+assert_true(mkdir($missingFragmentDirectory), 'missing-fragment fixture directory must be created');
+$missingFragmentCustomPath = $missingFragmentDirectory . '/extensions_custom.conf';
+$missingFragmentContent = "#include repeatcaller_alert.conf\n";
+file_put_contents($missingFragmentCustomPath, $missingFragmentContent);
+try {
+	Repeatcaller::removeLegacyAlertCallDialplan($missingFragmentDirectory);
+	assert_same($missingFragmentContent, file_get_contents($missingFragmentCustomPath), 'cleanup must not inspect or modify administrator dialplan if the module fragment is absent');
+} finally {
+	unlink($missingFragmentCustomPath);
+	rmdir($missingFragmentDirectory);
 }
 assert_true(strpos($uninstallSource, 'repeatcallerRemoveAgi()') !== false, 'uninstall hook must remove the deployed AGI script');
 assert_true(strpos($uninstallSource, "'/repeatcaller_alert_response.php'") !== false, 'uninstall hook must target the deployed AGI filename in Asterisk AGI-bin');

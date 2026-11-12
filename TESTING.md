@@ -1,17 +1,18 @@
 # Repeat Caller Installation Testing Checklist
 
 Use this checklist for real FreePBX installation testing on FreePBX 16 and 17
-with MySQL/MariaDB.
+with MySQL/MariaDB. The 1.2.0 branch is development code, not a signed release;
+stage its checkout or package in the module directory and use `installlocal`.
 
 ## Fresh Install
 
-1. Stage the signed release files in
-   `/var/www/html/admin/modules/repeatcaller/`. Then install the staged module
-   from a neutral directory:
+1. Stage module files in `/var/www/html/admin/modules/repeatcaller/`, then
+	install and enable the local module from a neutral directory:
 
 ```bash
 cd ~
-fwconsole ma install repeatcaller
+fwconsole ma installlocal repeatcaller
+fwconsole ma enable repeatcaller
 fwconsole chown
 fwconsole reload
 ```
@@ -108,9 +109,12 @@ php tests/repeat_release_contract.php
 
 The alerting contract covers first-destination NOANSWER progression, cumulative Ordered stages, mixed Keep Trying values, waiting for all sibling attempts, repeated stages after the final destination, acceptance and late-callback protection, Ring All editor and destination behaviour, and Ignore Callers separation. The admin and release contracts cover the Ring All/Ordered editor round-trip and documentation/help-text parity.
 
-## 1.1.1 Acceptance Notification Regression
+## 1.2.0 Acceptance and Suppression Regression
 
-Run the alerting, completion, and runtime contracts. They cover GUI and
+Run the repository contract as well as the alerting, completion, and runtime
+contracts. It verifies suppression override changes preserve accepted state,
+while suppression history, clear observation, and rearming remain intact.
+The alerting, completion, and runtime contracts cover GUI and
 telephone acceptance, every reminder mode, absent/active/expired suppression,
 stale reservations, queued pending/failed/snoozed/sending emails, late decline
 callbacks, and acceptance interleaved with marking emails `sending` or delivering them.
@@ -124,39 +128,46 @@ telephone acceptance at 11:06:09, then calls at 11:49:46, 11:50:58, 11:57:49,
 and 11:58:05. Expected: one incident, one initial GUI/three-email/Alert Call
 cycle, no reminders, all seven seen journeys retained, and a final rolling
 count of six. A later below-threshold observation closes the accepted incident;
-the next threshold creates a new ID with its own initial alerts. Existing
-suppression-enabled lifecycle tests continue to check blocked new episodes.
+the next threshold creates a new ID with its own initial alerts. Suppression
+reconciliation must never change an accepted incident back to active or
+suppressed, while unaccepted incidents continue to follow the selected
+suppression duration.
 
 Before release on FreePBX 16 and 17, verify acceptance with queued work,
 continued matching calls, observed clearing/rearming, and a new incident.
 Check unchanged unaccepted reminders, snooze, decline, Ordered/Ring All,
 Keep Trying, and acceptance stopping sibling calls. Unit interleavings do not
-prove every real database/transport race. Suppression-setting reconciliation
-is outside this correction: its separate accepted-to-active reactivation issue
-can undermine state-based notification eligibility and must be tested separately.
+prove every real database/transport race or guarantee recall of work already
+handed to an external transport.
 
-## 1.1.1 BMO Alert Call Dialplan
+## 1.2.0 BMO Alert Call Dialplan
 
 Repeat Caller must own zero custom Asterisk `.conf` files. After module upgrade
-and reload, inspect the launch, playback, summary, and caller-name contexts in
+and reload, inspect the launch, playback, and caller-name contexts in
 FreePBX-generated `extensions_additional.conf`; fresh installs must not create
 `repeatcaller_alert.conf` or add a managed include to `extensions_custom.conf`.
-The install contract pins all 86 legacy context/extension/label/application
-instructions to their pre-migration digest, including DTMF and hangup paths,
-excluding only the added originating-name Gosub before destination Dial.
+The obsolete summary context must be absent.
+The install contract pins all retained launch and playback instructions to
+their migration digest, including DTMF and hangup paths, excluding only the
+added originating-name Gosub before destination Dial. The obsolete summary
+context was removed because current playback is AGI-owned.
 
 Upgrade and uninstall share selective legacy cleanup. Test a complete managed
 block before/after unrelated dialplan, LF and CRLF files, no final newline,
 duplicate blocks, an otherwise empty file, a missing administrator file, and
 partial/lookalike/unmanaged includes. Only complete exact managed blocks and
-the legacy module fragment may be removed. Other bytes, files, whitespace,
-and administrator configuration must remain unchanged. Run cleanup twice to
-check idempotence; never delete `extensions_custom.conf` itself.
+the legacy module fragment may be removed. If any active unmanaged include
+remains, cleanup must abort without changing either file or deleting the
+referenced fragment. Other bytes, files, whitespace, and administrator
+configuration must remain unchanged. Run cleanup twice to check idempotence;
+never delete `extensions_custom.conf` itself.
 
-The legacy fragment defined three contexts, not an acceptance-check subroutine.
-Its existing summary references to `repeatcaller-alert-accept-check` are
-preserved without inventing new dialplan behaviour. Report that pre-existing
-undefined reference separately if the legacy summary context is exercised.
+The old summary helper contained references to an undefined
+`repeatcaller-alert-accept-check` subroutine. It was not called by current
+playback, which builds the summary and handles DTMF in the AGI session; the
+unreachable helper and references are removed. Live PBX testing must confirm
+generated playback, acceptance, decline, unanswered disposition, and reload
+behavior on FreePBX 16 and 17.
 
 ## 1.2.0 Internal Alert Call Caller Name
 
@@ -321,11 +332,15 @@ Timeout and stage-timing checks:
 
 ## Upgrade and Preservation
 
-39. On a FreePBX test system, update an installation from the official
-repository's existing Git checkout. Do not run Git commands against an
-installation that is not a Git checkout. Check for local changes and back
-them up before the hard reset; it discards local modifications and commits
-that are not on `origin/main`:
+Use a disposable FreePBX/PBXact test system with the published 1.0.2
+installation as the starting point. The contract suites do not prove a live
+1.0.2-to-1.2.0 data or dialplan migration; record the starting module version,
+back up the test data, and verify rules, incidents, alert history and generated
+dialplan after the upgrade. Do not treat 1.1.0 as an intermediate release.
+
+39. On a FreePBX test system, update an installation from the `1-2-0_Dev`
+branch. Do not run Git commands against an installation that is not a Git
+checkout. Preserve local changes and use a fast-forward-only update:
 
 ```bash
 git config --global --get-all safe.directory | grep -Fxq '/var/www/html/admin/modules/repeatcaller' \
@@ -333,16 +348,20 @@ git config --global --get-all safe.directory | grep -Fxq '/var/www/html/admin/mo
 cd /var/www/html/admin/modules/repeatcaller
 git status --short --branch
 git fetch origin
-git reset --hard origin/main
+git checkout 1-2-0_Dev
+git pull --ff-only origin 1-2-0_Dev
 cd ~
-fwconsole ma install repeatcaller
+fwconsole ma installlocal repeatcaller
+fwconsole ma enable repeatcaller
 fwconsole chown
 fwconsole reload
 fwconsole ma list | grep -i repeatcaller
 grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 ```
-Confirm both version checks report the expected version before testing
-signature state.
+Confirm the module listing and metadata report 1.2.0. This development checkout
+is unsigned; test signature handling only with a separately verified published
+package. The 1.0.2-to-1.2.0 upgrade must be exercised on a disposable PBX test
+system before claiming live upgrade verification.
 40. Confirm rules, incidents, and history remain intact.
 41. Review uninstall warning and cleanup expectations before removal.
 
@@ -356,7 +375,10 @@ signature state.
 47. Tick it again and save.
 48. Reopen the rule and confirm the field is blank and the previous value has been forgotten.
 
-## Final 1.1.0 Regression Checks
+## Unreleased Administration Regression Checks
+
+These checks cover work developed after 1.0.2 and originally tracked during
+1.1.0 development; they do not describe a published 1.1.0 release.
 
 49. In the rule editor, add an Alert Call destination using Add, then repeat using Enter; confirm both methods behave the same.
 50. Confirm Alert Call destination changes keep the associated Ignore these callers entry consistent without creating duplicate destinations.
