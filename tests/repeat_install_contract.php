@@ -36,9 +36,18 @@ if (!interface_exists('BMO')) {
 if (!class_exists('FreePBX')) {
 	class FreePBX {
 		public static $database;
+		public static $astEtcDir = '';
 
 		public static function Database() {
 			return self::$database;
+		}
+
+		public static function Config() {
+			return new class {
+				public function get(string $key): string {
+					return $key === 'ASTETCDIR' ? (string)FreePBX::$astEtcDir : '';
+				}
+			};
 		}
 
 		public static function Log() {
@@ -522,6 +531,19 @@ assert_same($sortedRequired, $createdTables, 'schema creation must cover exactly
 
 $installSource = file_get_contents($root . '/install.php');
 assert_true(strpos($installSource, 'Schema::install(') !== false, 'install.php must actually invoke schema creation, not merely reference the class');
+$legacyPreflightPosition = strpos($installSource, 'Repeatcaller::assertLegacyAlertCallDialplanSafe(');
+$legacySchemaPosition = strpos($installSource, 'Schema::install(');
+$legacyCleanupPosition = strpos($installSource, 'Repeatcaller::removeLegacyAlertCallDialplan(');
+$legacyAgiPosition = strpos($installSource, 'repeatcallerInstallAgi();');
+$legacyJobPosition = strpos($installSource, 'FreePBX::Job()->addClass(');
+assert_true($legacyPreflightPosition !== false && $legacySchemaPosition !== false && $legacyPreflightPosition < $legacySchemaPosition, 'legacy install entrypoint must preflight unsafe includes before schema changes');
+assert_true($legacyCleanupPosition !== false && $legacyAgiPosition !== false && $legacyJobPosition !== false && $legacySchemaPosition < $legacyAgiPosition && $legacyAgiPosition < $legacyCleanupPosition && $legacyCleanupPosition < $legacyJobPosition, 'legacy install entrypoint must deploy AGI before cleanup and register the job only after cleanup');
+$bmoInstallMethod = new ReflectionMethod(Repeatcaller::class, 'install');
+$controllerLines = explode("\n", file_get_contents($root . '/Repeatcaller.class.php'));
+$bmoInstallBody = implode("\n", array_slice($controllerLines, $bmoInstallMethod->getStartLine() - 1, $bmoInstallMethod->getEndLine() - $bmoInstallMethod->getStartLine() + 1));
+$bmoPreflightPosition = strpos($bmoInstallBody, 'assertLegacyAlertCallDialplanSafe(');
+$bmoSchemaPosition = strpos($bmoInstallBody, 'Schema::install(');
+assert_true($bmoPreflightPosition !== false && $bmoSchemaPosition !== false && $bmoPreflightPosition < $bmoSchemaPosition, 'BMO install entrypoint must preflight unsafe includes before schema changes');
 
 $moduleXml = file_get_contents($root . '/module.xml');
 assert_true($moduleXml !== false, 'module.xml should be readable');
@@ -547,6 +569,43 @@ assert_true(strpos($schemaSource, 'alert_enabled') === false, 'schema defaults a
 assert_true(strpos($schemaSource, "'suppression_history_prune_policy' => 'daily'") !== false, 'fresh schema must default suppression-history pruning to daily');
 assert_true(strpos($schemaSource, 'day_of_week TINYINT NOT NULL') !== false && strpos($schemaSource, 'ALTER TABLE repeatcaller_rule_schedules MODIFY COLUMN day_of_week TINYINT NOT NULL') !== false, 'schedule schema must define signed day_of_week and migrate existing unsigned columns');
 assert_true(strpos($schemaSource, 'self::ensureScheduleDayOfWeekIsSigned($pdo);') !== false && strpos($schemaSource, 'self::applyGuardedMigrations($pdo);') !== false, 'signed day_of_week migration must be invoked during the normal Schema::install upgrade path');
+
+$preflightDirectory = sys_get_temp_dir() . '/repeatcaller_install_preflight_' . uniqid('', true);
+assert_true(mkdir($preflightDirectory), 'BMO preflight fixture directory must be created');
+$preflightCustomPath = $preflightDirectory . '/extensions_custom.conf';
+$preflightFragmentPath = $preflightDirectory . '/repeatcaller_alert.conf';
+$preflightCustomContent = "#include repeatcaller_alert.conf\n";
+file_put_contents($preflightCustomPath, $preflightCustomContent);
+file_put_contents($preflightFragmentPath, 'legacy module fragment');
+$preflightDb = new SchemaInstallPathPDO();
+FreePBX::$database = $preflightDb;
+FreePBX::$astEtcDir = $preflightDirectory;
+$preflightModule = new Repeatcaller(new stdClass());
+try {
+	$preflightException = null;
+	try {
+		$preflightModule->install();
+	} catch (RuntimeException $e) {
+		$preflightException = $e;
+	}
+	assert_true($preflightException instanceof RuntimeException, 'BMO install must reject unmanaged legacy references before schema installation');
+	assert_same(0, (int)$preflightDb->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'")->fetchColumn(), 'BMO preflight failure must happen before any schema mutation');
+	assert_same($preflightCustomContent, file_get_contents($preflightCustomPath), 'BMO preflight failure must leave administrator dialplan unchanged');
+	assert_same('legacy module fragment', file_get_contents($preflightFragmentPath), 'BMO preflight failure must retain the referenced fragment');
+	file_put_contents($preflightCustomPath, "; administrator resolved the conflicting include\n");
+	$preflightModule->install();
+	assert_true(Schema::isReady($preflightDb), 'retry after resolving the conflict must complete the idempotent BMO schema install');
+	Repeatcaller::removeLegacyAlertCallDialplan($preflightDirectory);
+	Repeatcaller::removeLegacyAlertCallDialplan($preflightDirectory);
+	assert_same("; administrator resolved the conflicting include\n", file_get_contents($preflightCustomPath), 'retry after conflict resolution must preserve administrator content and be idempotent');
+	assert_true(!file_exists($preflightFragmentPath), 'retry after conflict resolution must remove the module-owned fragment');
+} finally {
+	FreePBX::$astEtcDir = '';
+	foreach (glob($preflightDirectory . '/*') as $preflightFile) {
+		unlink($preflightFile);
+	}
+	rmdir($preflightDirectory);
+}
 
 $legacyDb = new SchemaUpgradePDO();
 schemaUpgradeCreateLegacyTables($legacyDb);
@@ -924,6 +983,15 @@ assert_true($uninstallSource !== false, 'uninstall.php should be readable');
 assert_true(strpos($uninstallSource, 'Repeatcaller::removeLegacyAlertCallDialplan(') !== false, 'uninstall must share the selective upgrade cleanup');
 assert_true(strpos($uninstallSource, 'file_put_contents(') === false && strpos($uninstallSource, 'unlink($customPath)') === false, 'uninstall must not rewrite or delete administrator custom dialplan itself');
 $legacyBlock = "; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include\n";
+$cleanLegacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_clean_' . uniqid('', true);
+assert_true(mkdir($cleanLegacyDirectory), 'clean install preflight fixture directory must be created');
+try {
+	Repeatcaller::assertLegacyAlertCallDialplanSafe($cleanLegacyDirectory);
+	Repeatcaller::removeLegacyAlertCallDialplan($cleanLegacyDirectory);
+	assert_true(!file_exists($cleanLegacyDirectory . '/extensions_custom.conf') && !file_exists($cleanLegacyDirectory . '/repeatcaller_alert.conf'), 'clean install preflight and cleanup must not create legacy configuration');
+} finally {
+	rmdir($cleanLegacyDirectory);
+}
 $legacyCleanupCases = [
 	[null, null],
 	['', ''],
@@ -971,6 +1039,7 @@ $unmanagedLegacyReferences = [
 	"#include /etc/asterisk/repeatcaller_alert.conf\n",
 	"#include \"repeatcaller_alert.conf\"\n",
 	"#tryinclude repeatcaller_alert.conf\n",
+	"#include repeatcaller_alert.conf\n#tryinclude /etc/asterisk/repeatcaller_alert.conf\n",
 	" \t#include repeatcaller_alert.conf ; administrator include\r\n",
 	"; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include extra\n",
 	$legacyBlock . "#include repeatcaller_alert.conf\n" . $legacyBlock,
@@ -1002,17 +1071,46 @@ foreach (['upgrade', 'uninstall'] as $cleanupEntryPoint) {
 		}
 	}
 }
-$missingFragmentDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_missing_' . uniqid('', true);
-assert_true(mkdir($missingFragmentDirectory), 'missing-fragment fixture directory must be created');
-$missingFragmentCustomPath = $missingFragmentDirectory . '/extensions_custom.conf';
-$missingFragmentContent = "#include repeatcaller_alert.conf\n";
-file_put_contents($missingFragmentCustomPath, $missingFragmentContent);
-try {
-	Repeatcaller::removeLegacyAlertCallDialplan($missingFragmentDirectory);
-	assert_same($missingFragmentContent, file_get_contents($missingFragmentCustomPath), 'cleanup must not inspect or modify administrator dialplan if the module fragment is absent');
-} finally {
-	unlink($missingFragmentCustomPath);
-	rmdir($missingFragmentDirectory);
+$missingFragmentCases = [
+	[$legacyBlock, '', true],
+	["#include repeatcaller_alert.conf\n", null, false],
+	[$legacyBlock . "#include repeatcaller_alert.conf\n", null, false],
+	["; administrator configuration without a Repeat Caller reference\n", "; administrator configuration without a Repeat Caller reference\n", true],
+];
+foreach ($missingFragmentCases as [$beforeCleanup, $afterCleanup, $shouldSucceed]) {
+	$missingFragmentDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_missing_' . uniqid('', true);
+	assert_true(mkdir($missingFragmentDirectory), 'missing-fragment fixture directory must be created');
+	$missingFragmentCustomPath = $missingFragmentDirectory . '/extensions_custom.conf';
+	file_put_contents($missingFragmentCustomPath, $beforeCleanup);
+	try {
+		$cleanupException = null;
+		try {
+			Repeatcaller::assertLegacyAlertCallDialplanSafe($missingFragmentDirectory);
+			Repeatcaller::removeLegacyAlertCallDialplan($missingFragmentDirectory);
+		} catch (RuntimeException $e) {
+			$cleanupException = $e;
+		}
+		if ($shouldSucceed) {
+			assert_same(null, $cleanupException, 'missing fragment without unmanaged references, or with only the exact managed block, must clean safely');
+			assert_same($afterCleanup, file_get_contents($missingFragmentCustomPath), 'missing-fragment cleanup must remove only the exact managed block');
+		} else {
+			assert_true($cleanupException instanceof RuntimeException, 'missing fragment must not conceal an active unmanaged reference');
+			assert_true(strpos($cleanupException->getMessage(), 'Remove or update that administrator include') !== false, 'missing-fragment conflict must give actionable recovery guidance');
+			assert_same($beforeCleanup, file_get_contents($missingFragmentCustomPath), 'missing-fragment conflict must preserve administrator configuration byte-for-byte');
+		}
+		assert_true(!file_exists($missingFragmentDirectory . '/repeatcaller_alert.conf'), 'missing-fragment cleanup must not create the module fragment');
+		$retryException = null;
+		try {
+			Repeatcaller::removeLegacyAlertCallDialplan($missingFragmentDirectory);
+		} catch (RuntimeException $e) {
+			$retryException = $e;
+		}
+		assert_same(!$shouldSucceed, $retryException instanceof RuntimeException, 'repeated cleanup must preserve the same success or conflict result');
+		assert_same($shouldSucceed ? $afterCleanup : $beforeCleanup, file_get_contents($missingFragmentCustomPath), 'repeated cleanup must remain safe and idempotent');
+	} finally {
+		unlink($missingFragmentCustomPath);
+		rmdir($missingFragmentDirectory);
+	}
 }
 assert_true(strpos($uninstallSource, 'repeatcallerRemoveAgi()') !== false, 'uninstall hook must remove the deployed AGI script');
 assert_true(strpos($uninstallSource, "'/repeatcaller_alert_response.php'") !== false, 'uninstall hook must target the deployed AGI filename in Asterisk AGI-bin');

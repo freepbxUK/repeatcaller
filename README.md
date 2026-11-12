@@ -184,6 +184,25 @@ upgrade to the forthcoming 1.2.0 is from 1.0.2, but this path has not yet been
 verified on a live PBX; validate it on a FreePBX/PBXact test system before
 production use.
 
+Migration ordering: on FreePBX 16.0.45, the BMO `install()` hook runs before
+legacy `install.php`. BMO now performs a read-only legacy-include preflight
+before schema creation; `install.php` repeats the preflight before its own
+schema call. The legacy hook then ensures the schema, deploys the AGI, removes
+the module-owned legacy dialplan, and registers the job. Apply Config or reload
+is still required to write the BMO-generated contexts. The FreePBX 17 hook
+ordering has not been verified live.
+
+The hooks are not one transaction. If the first preflight finds an unmanaged
+reference, it stops before the BMO schema changes. If configuration changes
+after that check, or a later filesystem operation fails, the BMO schema may
+already have been created or migrated; the legacy cleanup rechecks before
+editing, and no database rollback is attempted. Schema installation is
+idempotent and existing rules/history are preserved. Resolve the reported
+administrator include, then rerun the local module upgrade, enable the module
+if needed, and reload; cleanup and job registration can then complete. An AGI
+deployment completed before a later cleanup conflict is harmless to the
+administrator dialplan and is replaced on retry.
+
 Check version before and after updating:
 
 ```sh

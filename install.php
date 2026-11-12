@@ -17,6 +17,9 @@
 require_once __DIR__ . '/src/Schema.php';
 require_once __DIR__ . '/Repeatcaller.class.php';
 
+// BMO install() runs first; repeat the read-only check for the legacy hook and
+// to catch a conflicting include added between installer entrypoints.
+\FreePBX\modules\Repeatcaller::assertLegacyAlertCallDialplanSafe((string)\FreePBX::Config()->get('ASTETCDIR'));
 \FreePBX\modules\Repeatcaller\Schema::install(\FreePBX::Database());
 
 repeatcallerInstallAgi();

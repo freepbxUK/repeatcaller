@@ -338,6 +338,16 @@ installation as the starting point. The contract suites do not prove a live
 back up the test data, and verify rules, incidents, alert history and generated
 dialplan after the upgrade. Do not treat 1.1.0 as an intermediate release.
 
+The BMO preflight and cleanup contracts cover a clean config directory, an
+exact managed include with and without its fragment, unmanaged-only and
+managed-plus-unmanaged references, a missing fragment, byte-for-byte preservation
+on refusal, and retry after the administrator resolves the conflict. On a real
+PBX, first verify that an unmanaged include fails before schema changes and
+AGI deployment; then remove or correct that administrator include yourself and
+retry `fwconsole ma installlocal repeatcaller`. Do not automatically delete or
+rewrite an unmanaged include. The BMO-before-legacy-hook order is evidenced for
+FreePBX 16.0.45; verify it on FreePBX 17 before treating that order as confirmed.
+
 39. On a FreePBX test system, update an installation from the `1-2-0_Dev`
 branch. Do not run Git commands against an installation that is not a Git
 checkout. Preserve local changes and use a fast-forward-only update:

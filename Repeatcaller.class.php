@@ -81,6 +81,7 @@ class Repeatcaller implements \BMO {
 	public function install(): void {
 		require_once __DIR__ . '/src/Schema.php';
 		try {
+			self::assertLegacyAlertCallDialplanSafe((string)\FreePBX::Config()->get('ASTETCDIR'));
 			\FreePBX\modules\Repeatcaller\Schema::install($this->db());
 		} catch (\Throwable $e) {
 			// Per the BMO install() contract, an exception thrown here means the
@@ -193,38 +194,46 @@ CONF;
 	}
 
 	public static function removeLegacyAlertCallDialplan(string $astetc): void {
-		$astetc = rtrim($astetc, '/');
-		if ($astetc === '') {
-			return;
+		$plan = self::inspectLegacyAlertCallDialplan($astetc);
+		if ($plan['content'] !== null && $plan['updated'] !== $plan['content'] && file_put_contents($plan['custom_path'], $plan['updated']) === false) {
+			throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
 		}
-		$fragmentPath = $astetc . '/repeatcaller_alert.conf';
-		if (!file_exists($fragmentPath)) {
-			return;
-		}
-		$customPath = $astetc . '/extensions_custom.conf';
-		if (file_exists($customPath)) {
-			$content = file_get_contents($customPath);
-			if ($content === false) {
-				throw new \RuntimeException('Unable to read legacy Repeat Caller dialplan include.');
-			}
-			$updated = preg_replace('/^; Repeat Caller managed include\r?\n#include repeatcaller_alert\.conf\r?\n; End Repeat Caller managed include(?:\r?\n|$)/m', '', $content);
-			if ($updated === null) {
-				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
-			}
-			$activeInclude = preg_match('/^[ \t]*#(?:try)?include[ \t]+["<]?(?:[^\\s"<>;]*\\/)?repeatcaller_alert\\.conf[">]?[ \t]*(?:;[^\\r\\n]*)?\\r?$/m', $updated);
-			if ($activeInclude === false) {
-				throw new \RuntimeException('Unable to inspect legacy Repeat Caller dialplan include.');
-			}
-			if ($activeInclude === 1) {
-				throw new \RuntimeException('An unmanaged reference to repeatcaller_alert.conf remains in extensions_custom.conf; automatic removal has been stopped to avoid breaking administrator dialplan.');
-			}
-			if ($updated !== $content && file_put_contents($customPath, $updated) === false) {
-				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
-			}
-		}
-		if (file_exists($fragmentPath) && !unlink($fragmentPath)) {
+		if ($plan['fragment_path'] !== '' && file_exists($plan['fragment_path']) && !unlink($plan['fragment_path'])) {
 			throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan fragment.');
 		}
+	}
+
+	public static function assertLegacyAlertCallDialplanSafe(string $astetc): void {
+		self::inspectLegacyAlertCallDialplan($astetc);
+	}
+
+	/** @return array{fragment_path:string,custom_path:string,content:?string,updated:?string} */
+	private static function inspectLegacyAlertCallDialplan(string $astetc): array {
+		$astetc = rtrim($astetc, '/');
+		if ($astetc === '') {
+			return ['fragment_path' => '', 'custom_path' => '', 'content' => null, 'updated' => null];
+		}
+		$fragmentPath = $astetc . '/repeatcaller_alert.conf';
+		$customPath = $astetc . '/extensions_custom.conf';
+		if (!file_exists($customPath)) {
+			return ['fragment_path' => $fragmentPath, 'custom_path' => $customPath, 'content' => null, 'updated' => null];
+		}
+		$content = file_get_contents($customPath);
+		if ($content === false) {
+			throw new \RuntimeException('Unable to read legacy Repeat Caller dialplan include. Check extensions_custom.conf permissions and retry the upgrade.');
+		}
+		$updated = preg_replace('/^; Repeat Caller managed include\r?\n#include repeatcaller_alert\.conf\r?\n; End Repeat Caller managed include(?:\r?\n|$)/m', '', $content);
+		if ($updated === null) {
+			throw new \RuntimeException('Unable to inspect the legacy Repeat Caller managed include in extensions_custom.conf.');
+		}
+		$activeInclude = preg_match('/^[ \t]*#(?:try)?include[ \t]+["<]?(?:[^\\s"<>;]*\\/)?repeatcaller_alert\\.conf[">]?[ \t]*(?:;[^\\r\\n]*)?\\r?$/m', $updated);
+		if ($activeInclude === false) {
+			throw new \RuntimeException('Unable to inspect legacy Repeat Caller dialplan references in extensions_custom.conf.');
+		}
+		if ($activeInclude === 1) {
+			throw new \RuntimeException('An unmanaged reference to repeatcaller_alert.conf remains in extensions_custom.conf. Remove or update that administrator include, then retry the Repeat Caller upgrade; extensions_custom.conf and repeatcaller_alert.conf were not changed.');
+		}
+		return ['fragment_path' => $fragmentPath, 'custom_path' => $customPath, 'content' => $content, 'updated' => $updated];
 	}
 
 	public function backup(): array {
