@@ -3,6 +3,7 @@
 // Repeat Caller uninstall hook.
 
 require_once __DIR__ . '/src/Schema.php';
+require_once __DIR__ . '/Repeatcaller.class.php';
 
 repeatcallerRemoveDialplan();
 repeatcallerRemoveAgi();
@@ -43,25 +44,5 @@ function repeatcallerRemoveAgi(): void {
 }
 
 function repeatcallerRemoveDialplan(): void {
-	$astetc = rtrim((string)\FreePBX::Config()->get('ASTETCDIR'), '/');
-	if ($astetc === '') {
-		return;
-	}
-
-	$fragmentPath = $astetc . '/repeatcaller_alert.conf';
-	$customPath = $astetc . '/extensions_custom.conf';
-	if (file_exists($fragmentPath)) {
-		@unlink($fragmentPath);
-	}
-
-	if (!file_exists($customPath)) {
-		return;
-	}
-
-	$content = (string)file_get_contents($customPath);
-	$pattern = '/\n?; Repeat Caller managed include\n#include repeatcaller_alert\.conf\n; End Repeat Caller managed include\n?/';
-	$updated = preg_replace($pattern, "\n", $content);
-	if (is_string($updated) && $updated !== $content) {
-		file_put_contents($customPath, rtrim($updated) . "\n");
-	}
+	\FreePBX\modules\Repeatcaller::removeLegacyAlertCallDialplan((string)\FreePBX::Config()->get('ASTETCDIR'));
 }

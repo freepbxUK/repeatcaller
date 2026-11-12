@@ -420,14 +420,13 @@ try {
 	$afterPostExpiryReminderCount = (int)$db->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE incident_id = {$incidentId} AND event_type LIKE 'reminder_%'")->fetchColumn();
 	$afterPostExpiryEmailReminderCount = (int)$db->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE incident_id = {$incidentId} AND event_type LIKE 'reminder_%' AND action_type = 'email'")->fetchColumn();
 	$afterPostExpiryCallReminderCount = (int)$db->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE incident_id = {$incidentId} AND event_type LIKE 'reminder_%' AND action_type = 'alert_call'")->fetchColumn();
-	// Accepted incidents receive GUI + email reminder rows only; Alert Call reminders are not reserved for accepted incidents.
-	assert_same($beforeReminderCount + 2, $afterPostExpiryReminderCount, 'GUI-accepted incidents should reserve gui and email reminder rows after suppression expires and new activity occurs');
-	assert_same($beforeEmailReminderCount + 1, $afterPostExpiryEmailReminderCount, 'GUI-accepted incidents should reserve exactly one fresh email reminder after suppression expires and new activity occurs');
+	assert_same($beforeReminderCount, $afterPostExpiryReminderCount, 'GUI-accepted incidents must not reserve reminder rows after suppression expires and new activity occurs');
+	assert_same($beforeEmailReminderCount, $afterPostExpiryEmailReminderCount, 'GUI-accepted incidents must not reserve email reminders after suppression expires and new activity occurs');
 	assert_same(0, $afterPostExpiryCallReminderCount, 'alert_call reminders must not be reserved for accepted incidents regardless of suppression state');
-	assert_same($beforePostExpiryEmailSends + 1, count($sender->calls), 'GUI-accepted incidents should deliver the fresh post-suppression email reminder');
+	assert_same($beforePostExpiryEmailSends, count($sender->calls), 'GUI-accepted incidents must not deliver post-suppression reminder emails');
 	$acceptedStateAfterExpiry = $db->query('SELECT last_alert_at, reminders_sent FROM repeatcaller_incident_alert_state WHERE incident_id = ' . $incidentId)->fetch(PDO::FETCH_ASSOC);
-	assert_same('2026-07-13 10:36:00', (string)$acceptedStateAfterExpiry['last_alert_at'], 'GUI-accepted incidents should advance the last-alert checkpoint once fresh post-suppression activity re-alerts');
-	assert_same(1, (int)$acceptedStateAfterExpiry['reminders_sent'], 'GUI-accepted incidents should advance reminder count once fresh post-suppression activity re-alerts');
+	assert_same('2026-07-13 10:06:00', (string)$acceptedStateAfterExpiry['last_alert_at'], 'GUI-accepted incidents must preserve the last-alert checkpoint after suppression expiry');
+	assert_same(0, (int)$acceptedStateAfterExpiry['reminders_sent'], 'GUI-accepted incidents must preserve the reminder count after suppression expiry');
 
 	$clock->now = '2026-07-13 11:37:00';
 	insert_cdr($db, ['linkedid' => 'C4', 'calldate' => '2026-07-13 11:37:00']);

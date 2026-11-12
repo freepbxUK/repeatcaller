@@ -23,6 +23,8 @@ final class AlertCallAgiSession {
 	private AlertCallPromptResolver $promptResolver;
 	/** @var array{invalid:string,retry:string,thankyou:string,goodbye:string,remote_accepted:string} */
 	private array $interactionPrompts;
+	/** @var (callable(string,string):bool)|null */
+	private $responseHandler = null;
 
 	public function __construct(?AlertCallPromptResolver $promptResolver = null) {
 		$this->promptResolver = $promptResolver ?? new AlertCallPromptResolver();
@@ -30,9 +32,11 @@ final class AlertCallAgiSession {
 
 	/**
 	 * @param callable():bool $isRemotelyAccepted
+	 * @param (callable(string,string):bool)|null $onResponse Persists a pressed 1 or 2 before any closing prompt. Closing prompts play only when it returns true; if it returns anything else the session returns 'persistence_failed' silently, and exceptions propagate to the caller.
 	 * @return array{response:string,digit:string,accepted:bool}
 	 */
-	public function run(array $context, AlertCallAgiTransport $transport, callable $isRemotelyAccepted): array {
+	public function run(array $context, AlertCallAgiTransport $transport, callable $isRemotelyAccepted, ?callable $onResponse = null): array {
+		$this->responseHandler = $onResponse;
 		$attempt = 1;
 		$lastInvalidDigit = '';
 		$playbackLanguage = trim((string)($context['playback_language'] ?? ''));
@@ -228,6 +232,9 @@ final class AlertCallAgiSession {
 
 	private function terminalAccepted(AlertCallAgiTransport $transport): array {
 		$transport->setVariable('REPEATCALLER_ALERT_COMPLETED', '1');
+		if (!$this->persistResponse('accepted', self::ACCEPT_DIGIT)) {
+			return ['response' => 'persistence_failed', 'digit' => self::ACCEPT_DIGIT, 'accepted' => false];
+		}
 		$this->streamInteractionPrompt('thankyou', '', $transport);
 		$this->streamInteractionPrompt('goodbye', '', $transport);
 
@@ -236,6 +243,9 @@ final class AlertCallAgiSession {
 
 	private function terminalDeclined(AlertCallAgiTransport $transport): array {
 		$transport->setVariable('REPEATCALLER_ALERT_COMPLETED', '1');
+		if (!$this->persistResponse('declined', self::DECLINE_DIGIT)) {
+			return ['response' => 'persistence_failed', 'digit' => self::DECLINE_DIGIT, 'accepted' => false];
+		}
 		$this->streamInteractionPrompt('thankyou', '', $transport);
 		$this->streamInteractionPrompt('goodbye', '', $transport);
 
@@ -257,6 +267,17 @@ final class AlertCallAgiSession {
 		$this->streamInteractionPrompt('goodbye', '', $transport);
 
 		return ['response' => 'remote_accepted', 'digit' => '', 'accepted' => false];
+	}
+
+	/**
+	 * REPEATCALLER_ALERT_COMPLETED is already set, so the hangup handler cannot overwrite a
+	 * pressed 1 or 2 with answered_no_response if the caller leaves or persistence fails.
+	 */
+	private function persistResponse(string $response, string $digit): bool {
+		if ($this->responseHandler === null) {
+			return true;
+		}
+		return call_user_func($this->responseHandler, $response, $digit) === true;
 	}
 
 	private function streamInteractionPrompt(string $name, string $escapeDigits, AlertCallAgiTransport $transport): string {

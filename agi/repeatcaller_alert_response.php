@@ -356,6 +356,8 @@ try {
 			$fallbackProfile = repeatcallerAgiFallbackProfile();
 		$interactiveSession = new \FreePBX\modules\Repeatcaller\AlertCallAgiSession();
 		$transport = repeatcallerAgiCreateTransport();
+		$earlyResult = null;
+		$signalError = null;
 		$sessionResult = $interactiveSession->run([
 			'playback_target' => (string)($argv[5] ?? ''),
 			'playback_language' => $playbackLanguage,
@@ -372,24 +374,44 @@ try {
 			'summary_did_value' => (string)($argv[12] ?? ''),
 		], $transport, function () use ($repository, $incidentId): bool {
 			return $repository->isIncidentAcceptedForRemoteAlertRedirect($incidentId);
+		}, function (string $sessionResponse, string $sessionDigit) use ($repository, $moduleRoot, $historyId, $incidentId, $recipient, $now, &$earlyResult, &$signalError): bool {
+			// Persist accept/decline before any closing prompt; thank-you/goodbye play only if this returns true.
+			// A repository exception propagates out of the session unplayed and is reported as a persistence failure.
+			$earlyResult = $repository->recordAlertCallDtmfResponse($historyId, $incidentId, $sessionResponse, $recipient, $sessionDigit, $now);
+			if (empty($earlyResult['status'])) {
+				return false;
+			}
+			if ($sessionResponse === 'accepted') {
+				try {
+					require_once $moduleRoot . '/Repeatcaller.class.php';
+					$module = new \FreePBX\modules\Repeatcaller(new \stdClass());
+					$module->signalIncidentAcceptedForLiveAlertCalls($incidentId, $historyId);
+				} catch (\Throwable $e) {
+					// Acceptance is already stored, so the confirmation remains truthful; report afterwards.
+					$signalError = $e;
+				}
+			}
+			return true;
 		});
 
 		if ((string)$sessionResult['response'] === 'remote_accepted') {
 			exit(REPEATCALLER_AGI_EXIT_OK);
 		}
 
-		$result = $repository->recordAlertCallDtmfResponse(
-			$historyId,
-			$incidentId,
-			(string)$sessionResult['response'],
-			$recipient,
-			(string)$sessionResult['digit'],
-			$now
-		);
-		if ((string)$sessionResult['response'] === 'accepted' && !empty($result['status'])) {
-			require_once $moduleRoot . '/Repeatcaller.class.php';
-			$module = new \FreePBX\modules\Repeatcaller(new \stdClass());
-			$module->signalIncidentAcceptedForLiveAlertCalls($incidentId, $historyId);
+		if ($earlyResult !== null) {
+			$result = $earlyResult;
+		} else {
+			$result = $repository->recordAlertCallDtmfResponse(
+				$historyId,
+				$incidentId,
+				(string)$sessionResult['response'],
+				$recipient,
+				(string)$sessionResult['digit'],
+				$now
+			);
+		}
+		if ($signalError !== null) {
+			throw $signalError;
 		}
 		repeatcallerTryImmediateOrderedFollowUp($repository, $moduleRoot, $context, $result, $now);
 	} elseif ($response === 'dialstatus') {
@@ -431,6 +453,9 @@ try {
 				require_once $moduleRoot . '/Repeatcaller.class.php';
 				$module = new \FreePBX\modules\Repeatcaller(new \stdClass());
 				foreach ($notice['recipients'] as $emailRecipient) {
+					if (!$repository->isIncidentActive($incidentId)) {
+						break;
+					}
 					$sendResult = $module->sendEmail((string)$emailRecipient, $subject, $message);
 					if (empty($sendResult['status'])) {
 						repeatcallerAgiLog('repeatcaller AGI: failed to send decline notification email', $context + ['email_recipient' => (string)$emailRecipient, 'send_error' => (string)($sendResult['message'] ?? 'unknown')]);

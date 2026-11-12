@@ -70,8 +70,8 @@ $root = dirname(__DIR__);
 
 $moduleXml = simplexml_load_file($root . '/module.xml');
 assert_true($moduleXml !== false, 'module.xml should parse');
-assert_same('1.1.0', (string)$moduleXml->version, 'module.xml version must be 1.1.0 for this release');
-assert_same('1.1.0', Repeatcaller::VERSION, 'Repeatcaller fallback VERSION constant must match module.xml for release 1.1.0');
+assert_same('1.2.0', (string)$moduleXml->version, 'module.xml version must be 1.2.0 for this release');
+assert_same('1.2.0', Repeatcaller::VERSION, 'Repeatcaller fallback VERSION constant must match module.xml for release 1.2.0');
 assert_same('FreePBX UK', (string)$moduleXml->publisher, 'module.xml publisher must identify FreePBX UK');
 assert_same('https://github.com/freepbxUK/repeatcaller', (string)$moduleXml->{'more-info'}, 'module.xml more-info must point to the official FreePBX UK repository');
 assert_same('https://www.gnu.org/licenses/gpl-3.0.txt', (string)$moduleXml->licenselink, 'module.xml GPL link must use HTTPS');
@@ -90,7 +90,13 @@ $moduleXmlSource = file_get_contents($root . '/module.xml');
 assert_true($moduleXmlSource !== false, 'module.xml source should be readable');
 assert_true(strpos($moduleXmlSource, '16.0' . '|' . '17.0') === false, 'module.xml must not use pipe-delimited FreePBX versions');
 $moduleChangelog = (string)$moduleXml->changelog;
-assert_true(strpos($moduleChangelog, '*1.1.0* First signed FreePBX UK release.') !== false, 'module.xml changelog should identify the signed 1.1.0 release');
+assert_true(strpos($moduleChangelog, 'anonymous Caller ID handling') !== false, 'module.xml should describe the anonymous caller correction within the development release');
+assert_true(strpos($moduleChangelog, '*1.2.0* Under development; intended to succeed published release 1.0.2.') !== false, 'module.xml changelog should identify 1.2.0 as under development after published 1.0.2');
+assert_true(strpos($moduleChangelog, '*1.1.0*') === false && strpos($moduleChangelog, '*1.1.1*') === false, 'module.xml changelog must not list unreleased development versions as releases');
+foreach (['pagination/sorting', 'per-rule Test Email', 'DID/email identity', 'Run Now reporting', 'preserving rule filters and incident behavior', 'post-acceptance notifications', 'accepted state during suppression reconciliation', 'safe legacy cleanup', 'originating caller-name improvements', 'removal of obsolete acceptance-check references', 'FreePBX/PBXact 16 and 17'] as $releaseFeature) {
+	assert_true(stripos($moduleChangelog, $releaseFeature) !== false, 'module.xml 1.2.0 changelog should summarize ' . $releaseFeature);
+}
+assert_true(substr_count($moduleChangelog, '*1.2.0*') === 1, 'module.xml should contain one consolidated 1.2.0 entry');
 assert_true(strpos($moduleChangelog, '*1.0.2*') !== false && strpos($moduleChangelog, '*1.0.1*') !== false, 'module.xml changelog should preserve previous stable release history');
 
 // --- 1-3: AJAX allowlist, dispatcher, and frontend command parity --------
@@ -212,21 +218,31 @@ assert_true(strpos($viewSource, 'Selected DIDs only') === false, 'rule editor sh
 
 $readmeSource = file_get_contents($root . '/README.md');
 assert_true($readmeSource !== false, 'README should be readable');
-assert_true(strpos($readmeSource, '# Repeat Caller 1.1.0 for FreePBX 16 and 17') !== false, 'README title should declare 1.1.0');
-assert_true(strpos($readmeSource, 'Repeat Caller 1.1.0 is the first signed FreePBX UK release.') !== false, 'README should present 1.1.0 as the first signed FreePBX UK release');
-assert_true((bool)preg_match('/which is certified by the FreePBX Module\\s+Signing v2 master key/', $readmeSource), 'README should explain the signing certification arrangement');
+assert_true(strpos($readmeSource, '# Repeat Caller 1.2.0 for FreePBX 16 and 17') !== false, 'README title should declare 1.2.0');
+assert_true(strpos($readmeSource, 'Version 1.2.0 is under development') !== false && strpos($readmeSource, 'It has not been published, signed, or approved for') !== false, 'README should state that 1.2.0 is under development and not published or signed');
+assert_true(strpos($readmeSource, 'The last published release is 1.0.2.') !== false, 'README should identify 1.0.2 as the last published release');
+assert_true(strpos($readmeSource, 'work but was never published as a release.') !== false, 'README should clarify that 1.1.0 was unreleased development work');
+assert_true(strpos($readmeSource, '### 1.2.0, under development') !== false, 'README release history should not present 1.2.0 as a completed dated release');
+assert_true(strpos($readmeSource, '### 1.1.0') === false, 'README must consolidate 1.1.0 development work instead of presenting it as a release');
+assert_true(substr_count($readmeSource, '### 1.2.0, under development') === 1, 'README should have one consolidated 1.2.0 history entry');
+assert_true(strpos($readmeSource, '### 1.0.2, patch release, 24 August 2026') !== false, 'README should retain the last published 1.0.2 release history');
+assert_true(strpos($readmeSource, '[USER_GUIDE.md](USER_GUIDE.md)') !== false && strpos($readmeSource, '[TESTING.md](TESTING.md)') !== false, 'README documentation links should be repository-relative');
+assert_true(strpos($readmeSource, 'codespaces') === false && strpos($readmeSource, 'workspaceStorage') === false && strpos($readmeSource, 'vscode://') === false, 'README must not contain temporary editor or Codespaces links');
+assert_true(strpos($readmeSource, 'No caller number is generated or') !== false && strpos($readmeSource, 'Forwarding and SIP redirects require live validation.') !== false, 'README should describe number preservation without claiming simulated forwarding isolation');
+assert_true(strpos($readmeSource, 'Only `CALLERID(name)` is assigned') !== false && strpos($readmeSource, 'saved original name is restored') !== false, 'README should describe originating-name assignment and external name restoration without a competing connected-line mechanism');
+assert_true(strpos($readmeSource, '1.1.0 was the first signed') === false && strpos($readmeSource, '1.1.0 files') === false, 'README must not claim that 1.1.0 was published or signed');
+assert_true((bool)preg_match('/certified by the FreePBX\\s+Module Signing v2 master key/', $readmeSource), 'README should explain the signing certification arrangement without attributing it to a particular release');
 assert_true(strpos($readmeSource, '[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller)') !== false, 'README should use the official FreePBX UK repository');
 assert_true(strpos($readmeSource, 'Repeat Caller supports two distinct operating modes') !== false, 'README should describe the module in user-facing language');
-assert_true(strpos($readmeSource, 'fwconsole ma installlocal repeatcaller') !== false, 'README must keep installlocal warning text');
-assert_true(strpos($readmeSource, 'git reset --hard origin/main') !== false, 'README should use an explicit remote branch when recovering an incomplete stable Git update');
-assert_true(strpos($readmeSource, 'A hard reset discards uncommitted changes and local commits') !== false, 'README should warn administrators about local changes before a hard reset');
-assert_true(strpos($readmeSource, 'local file named `FETCH_HEAD`') !== false, 'README should explain the ambiguity of resetting to FETCH_HEAD');
-assert_true(strpos($readmeSource, 'Git commands only when') !== false && strpos($readmeSource, 'containing a `.git` directory') !== false, 'README should restrict Git troubleshooting to Git checkouts');
+assert_true(strpos($readmeSource, 'fwconsole ma installlocal repeatcaller') !== false && strpos($readmeSource, 'fwconsole ma enable repeatcaller') !== false, 'README should use local install and explicit enablement for staged and development module files');
+assert_true(strpos($readmeSource, 'git reset --hard') === false, 'README must not recommend destructive hard resets during module updates');
+assert_true(strpos($readmeSource, 'git pull --ff-only origin 1-2-0_Dev') !== false, 'README should document a non-destructive fast-forward update for the development branch');
+assert_true(strpos($readmeSource, 'Run Git commands only when the installed module directory') !== false && strpos($readmeSource, 'contains a `.git` directory.') !== false, 'README should restrict Git troubleshooting to Git checkouts');
 assert_true(strpos($readmeSource, 'git config --get-all remote.origin.fetch') !== false, 'README should document inspecting the configured remote fetch refspec');
 assert_true(strpos($readmeSource, '+refs/heads/*:refs/remotes/origin/*') !== false, 'README should document restoring the normal all-branches fetch refspec');
-assert_true(strpos($readmeSource, 'git fetch --prune origin') !== false && strpos($readmeSource, '`origin/main` is present') !== false, 'README should document refetching and checking the stable remote branch');
-assert_true(strpos($readmeSource, '### Verify the update') !== false && strpos($readmeSource, '### If the GitHub update did not complete') !== false, 'README should document update verification and incomplete Git updates');
-assert_true(strpos($readmeSource, '### Signature warnings after updating an older unsigned release') !== false && strpos($readmeSource, '#### Module is Unsigned') !== false, 'README should document unsigned status after upgrading older installations');
+assert_true(strpos($readmeSource, 'git fetch --prune origin') !== false && strpos($readmeSource, 'the intended source branch exists') !== false, 'README should document refetching and checking the intended source branch');
+assert_true(strpos($readmeSource, '### Verify the update') !== false && strpos($readmeSource, '### If the Git update did not complete') !== false, 'README should document update verification and incomplete Git updates');
+assert_true(strpos($readmeSource, '### Signature warnings for a published package') !== false && strpos($readmeSource, '#### Module is Unsigned') !== false, 'README should scope signature troubleshooting to published packages');
 assert_true(strpos($readmeSource, '#### Signed by unknown or untrusted key') !== false, 'README should document developer-key trust troubleshooting');
 assert_true(strpos($readmeSource, 'grep: /home/asterisk/.gnupg/gpg.conf: No such file or directory') !== false, 'README should explain the harmless missing GnuPG configuration warning');
 assert_true(strpos($readmeSource, '--check-sigs DD6DC4210FD028092D4981A56079D3C0D58322EE') !== false, 'README should use the confirmed Repeat Caller developer-key fingerprint');
@@ -241,14 +257,13 @@ assert_true(strpos($readmeSource, 'TESTING.md') !== false, 'README should link t
 assert_true(strpos($readmeSource, '## Introduction') !== false, 'README should include Introduction section');
 assert_true(strpos($readmeSource, '## Compatibility') !== false, 'README should include Compatibility section');
 assert_true(strpos($readmeSource, '## Release History') !== false, 'README should include a Release History section');
-assert_true(strpos($readmeSource, 'Repeat Caller 1.1.0 is the first signed FreePBX UK release.') !== false, 'README should identify the completed 1.1.0 signed release');
-assert_true(strpos($readmeSource, 'Updates publisher, licence, project metadata, and release presentation') !== false, 'README should document the publisher and project metadata updates');
+assert_true(strpos($readmeSource, 'The pagination work developed during the unreleased 1.1.0 development period') !== false, 'README may attribute 1.1.0-era development work without presenting it as a release');
+assert_true(strpos($readmeSource, 'Updates publisher, licence, repository metadata, and compatibility') !== false, 'README should document publisher, licence, repository metadata and compatibility updates');
 assert_true(strpos($readmeSource, 'Adds a per-rule Test Email action') !== false, 'README should describe the 1.1.0 Test Email feature');
 assert_true(strpos($readmeSource, 'Adds independent 25-record server-side pagination') !== false, 'README release history should document independent incident/history pagination');
 assert_true((bool)preg_match('/sorting preference is\\s+persisted independently/', $readmeSource), 'README release history should document per-table sorting preferences');
 assert_true(strpos($readmeSource, 'persisted independently in the database') !== false, 'README should state that sorting preferences are database-persisted');
-assert_true(strpos($readmeSource, 'Preserves the existing 15-row Rules and Schedule batching behaviour') !== false, 'README release history should state that unrelated Rules and Schedule batching is preserved');
-assert_true(strpos($readmeSource, '### 1.1.0, first signed FreePBX UK release') !== false, 'README release history should include the signed 1.1.0 entry');
+assert_true((bool)preg_match('/Rules and Schedule retain their\\s+existing row batching\\./', $readmeSource), 'README release history should state that unrelated Rules and Schedule batching is preserved');
 assert_true(strpos($readmeSource, '### 1.0.2, patch release, 24 August 2026') !== false, 'README should include the 1.0.2 release history heading');
 assert_true(strpos($readmeSource, 'resolved playback languages, and clear original, adapted, or fallback status') !== false, 'README release history should document the Alert Call language status categories');
 assert_true(strpos($readmeSource, 'acceptance scenarios using the same prompt resolution as live Alert Calls') !== false, 'README release history should document Alert Call language sample playback');
@@ -310,13 +325,13 @@ assert_true(strpos($readmeSource, 'current public ' . 'release candidate') === f
 assert_true(strpos($readmeSource, 'stage cadence') === false, 'README must not expose internal stage cadence terminology');
 assert_true(strpos($readmeSource, 'email escalation') === false, 'README must not use the old email escalation wording');
 assert_true(strpos($readmeSource, 'Enable monitoring in Global Settings') === false, 'README must not refer to removed Global Settings monitoring enablement');
-assert_true(strpos($readmeSource, "### Option 1: Install signed or pre-staged release files") !== false, 'README should consolidate signed and pre-staged module file installation');
-assert_true(strpos($readmeSource, "cd ~\nfwconsole ma install repeatcaller") !== false, 'README should run fwconsole install commands from a neutral directory');
-assert_true(strpos($readmeSource, 'git clone https://github.com/freepbxUK/repeatcaller.git repeatcaller') !== false, 'README should clone the stable module from the official repository');
+assert_true(strpos($readmeSource, '### Option 1: Install the published 1.0.2 release') !== false, 'README should identify the published 1.0.2 installation source');
+assert_true(strpos($readmeSource, "cd ~\nfwconsole ma installlocal repeatcaller\nfwconsole ma enable repeatcaller") !== false, 'README should install and enable local module files from a neutral directory');
+assert_true(strpos($readmeSource, 'git clone --branch 1-2-0_Dev https://github.com/freepbxUK/repeatcaller.git repeatcaller') !== false, 'README should explicitly clone the 1.2.0 development branch for test installation');
 assert_true(strpos($readmeSource, 'Do not uninstall during an update.') !== false, 'README should warn that uninstalling removes stored data');
-assert_true(strpos($readmeSource, '### Verify the update') < strpos($readmeSource, '### Signature warnings after updating an older unsigned release'), 'README should require version verification before signature troubleshooting');
+assert_true(strpos($readmeSource, '### Verify the update') < strpos($readmeSource, '### Signature warnings for a published package'), 'README should require version verification before signature troubleshooting');
 assert_true(strpos($readmeSource, 'fwconsole ma refreshsignatures') !== false, 'README should document the standard signature refresh command for a published signed release');
-assert_true(strpos($readmeSource, 'Option 3: Install from a local copy') !== false, 'README should document local-copy installation path');
+assert_true(strpos($readmeSource, 'Option 3: Install a future signed 1.2.0 package or another local copy') !== false, 'README should document future signed package and local-copy installation paths');
 assert_true(strpos($readmeSource, 'Git commands require the modules/repository directory context.') !== false, 'README should explain why Git runs from repository/module paths');
 assert_true(strpos($readmeSource, 'switch back to a neutral directory before running fwconsole commands.') !== false, 'README should explain that fwconsole intentionally runs from a neutral directory after Git operations');
 assert_true(strpos($readmeSource, 'Option 3: Update from a local copy') !== false, 'README should document local-copy update path');
@@ -324,6 +339,7 @@ assert_true(strpos($readmeSource, '## Release Status') !== false, 'README should
 assert_true(strpos($readmeSource, '## Support and Feedback') !== false, 'README should explain support and feedback channels');
 assert_true(strpos($readmeSource, 'https://freepbx.uk/support/') !== false, 'README should link to FreePBX UK support');
 assert_true(strpos($readmeSource, 'Assisted-by: GitHub-Copilot:gpt-6-luna') !== false, 'README should disclose the required 1.1.0 AI-assistance trailer');
+assert_true(strpos($readmeSource, '1.1.0 was the first signed') === false && strpos($readmeSource, 'signed Repeat Caller 1.1.0') === false, 'README must not attribute publication or signing to 1.1.0');
 
 $userGuideSource = file_get_contents($root . '/USER_GUIDE.md');
 assert_true($userGuideSource !== false, 'USER_GUIDE.md should exist and be readable');
@@ -376,7 +392,9 @@ assert_true(strpos($userGuideSource, 'Snooze is not suppression.') !== false, 'U
 $testingSource = file_get_contents($root . '/TESTING.md');
 assert_true($testingSource !== false, 'TESTING.md should exist and be readable');
 assert_true((bool) preg_match('/Confirm the available pruning schedule options:\s+- Never\s+- Hourly\s+- Daily \(default\)\s+- Weekly\s+- Monthly\s+- Yearly/', $testingSource), 'TESTING.md should list the complete pruning schedule options in canonical order');
-assert_true(strpos($testingSource, 'git reset --hard origin/main') !== false, 'TESTING.md should document updating from the stable release branch');
+assert_true(strpos($testingSource, 'git pull --ff-only origin 1-2-0_Dev') !== false && strpos($testingSource, 'fwconsole ma installlocal repeatcaller') !== false, 'TESTING.md should document a safe development-branch update and local module installation');
+assert_true(strpos($testingSource, '1.1.1') === false, 'TESTING.md must not retain obsolete 1.1.1 work headings');
+assert_true(strpos($testingSource, 'Suppression-setting reconciliation is outside this correction') === false, 'TESTING.md must not describe the accepted-state reconciliation defect as unresolved');
 
 assert_true(preg_match('/\b0\.' . '9\.[0-9]+\b/', $readmeSource) !== 1, 'README must not reference legacy patch versions');
 assert_true(strpos($readmeSource, 'CHANGELOG') === false && strpos($readmeSource, 'changelog') === false, 'README must not reference changelog files');

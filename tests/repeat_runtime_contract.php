@@ -2074,6 +2074,134 @@ assert_true($repositoryClearWorkflow->clearSuppressedIncidentHistory((int)$secon
 	assert_same('', (string)$zeroSuppressIncident2['suppression_expires_at'], 'zero suppression: second incident must also have no suppression period');
 	assert_same(0, (int)$dbZeroSuppress->query('SELECT COUNT(*) FROM repeatcaller_incident_suppression_history WHERE rule_id = ' . $zeroSuppressRuleId)->fetchColumn(), 'zero suppression: no suppression-history rows should be created when suppression is disabled');
 
+	[$productionDb, $productionRepository] = create_runtime_environment(':memory:', '2026-10-18 10:57:31');
+	$productionClock = new InvertTestClock('2026-10-18 10:57:31');
+	$productionScanner = new CdrScanner($productionDb, $productionClock);
+	$productionRuntime = new BackgroundProcessor($productionDb, $productionRepository, $productionScanner, $productionClock);
+	$productionEmails = new FakeEmailSender();
+	$productionCalls = new FakeCallSender();
+	$productionAlerts = new IncidentAlertProcessor($productionRepository, $productionEmails, $productionClock, $productionCalls);
+	insert_route($productionDb, '18005550001', '', 'Production acceptance regression');
+	$productionRule = insert_rule($productionDb, [
+		'name' => 'Production acceptance regression', 'threshold_count' => 3, 'observation_window_minutes' => 60,
+		'suppression_minutes_override' => 0, 'alert_reminder_mode_override' => '5m',
+		'email_enabled' => 1, 'email_recipients' => 'one@example.invalid,two@example.invalid,three@example.invalid',
+		'alert_call_enabled' => 1, 'alert_call_destinations' => '801',
+		'schedules' => [['day' => -1, 'start' => '08:00', 'end' => '18:00']],
+		'created_at' => '2026-10-18 09:00:00', 'updated_at' => '2026-10-18 09:00:00',
+	]);
+	$productionTimeline = [
+		['10:55:52', '10:57:31', 1], ['11:00:39', '11:02:15', 2], ['11:04:24', '11:05:51', 3],
+		['11:49:46', '11:50:28', 4], ['11:50:58', '11:52:23', 5], ['11:57:49', '11:58:18', 5], ['11:58:05', '12:01:20', 6],
+	];
+	$productionIncident = 0;
+	foreach ($productionTimeline as $callIndex => [$callTime, $processedTime, $windowCount]) {
+		$productionClock->now = '2026-10-18 ' . $processedTime;
+		insert_cdr($productionDb, ['linkedid' => 'production-' . $callIndex, 'calldate' => '2026-10-18 ' . $callTime]);
+		$productionRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+		$productionAlerts->run(['alert_history_prune_policy' => 'never']);
+		if ($callIndex < 2) {
+			assert_same(0, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'production regression must not trigger before three calls');
+			continue;
+		}
+		$productionRow = $productionDb->query('SELECT * FROM repeatcaller_incidents ORDER BY id LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+		assert_same($windowCount, (int)$productionRow['matched_call_count'], 'production regression must preserve each rolling 60-minute count');
+		assert_same('2026-10-18 ' . $callTime, $productionRow['last_matched_at'], 'accepted tracking must retain each matching call timestamp');
+		assert_same(null, $productionRow['suppression_expires_at'], 'zero suppression must remain disabled after acceptance');
+		if ($callIndex === 2) {
+			$productionIncident = (int)$productionRow['id'];
+			$productionCallHistory = (int)$productionDb->query("SELECT id FROM repeatcaller_incident_alert_history WHERE action_type = 'alert_call'")->fetchColumn();
+			$productionAcceptance = $productionRepository->recordAlertCallDtmfResponse($productionCallHistory, $productionIncident, 'accepted', '801', '1', '2026-10-18 11:06:09');
+			assert_true(!empty($productionAcceptance['accepted']), 'production incident must be successfully accepted by telephone');
+			$productionHistory = $productionDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+			$productionAlertState = $productionRepository->loadIncidentAlertState($productionIncident);
+		} else {
+			assert_same('accepted', $productionRow['state'], 'the continuous episode must retain the accepted incident');
+			assert_same('alert-call:801', $productionRow['accepted_by'], 'continued activity must preserve telephone attribution');
+			assert_same('2026-10-18 11:06:09', $productionRow['accepted_at'], 'continued activity must preserve the acceptance timestamp');
+			assert_same('alert_call', $productionRow['accept_source'], 'continued activity must preserve the acceptance source');
+			$productionAlerts->run(['alert_history_prune_policy' => 'never']);
+			assert_same($productionHistory, $productionDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), 'accepted production activity must not add or alter notifications');
+			assert_same($productionAlertState, $productionRepository->loadIncidentAlertState($productionIncident), 'accepted production activity must not advance reminders');
+		}
+	}
+	assert_same(1, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'the production sequence must remain one continuous incident');
+	assert_same(7, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_seen_calls')->fetchColumn(), 'all seven production journeys must remain tracked');
+	assert_same(0, (int)$productionDb->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE event_type LIKE 'reminder_%'")->fetchColumn(), 'production acceptance must prevent all later reminder events');
+	assert_same(1, (int)$productionDb->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE action_type = 'gui' AND event_type = 'initial'")->fetchColumn(), 'the production sequence must retain its single initial GUI event');
+	assert_same(3, count($productionEmails->calls), 'production sequence must deliver only the three initial recipient emails');
+	assert_same(1, count($productionCalls->calls), 'production sequence must initiate only the initial Alert Call');
+	$productionSubject = $productionRepository->loadSubjectState($productionRule, $productionRow['subject_key']);
+	assert_same(1, (int)$productionSubject['threshold_met'], 'the production episode must not spuriously clear or rearm');
+	assert_same($productionIncident, (int)$productionSubject['active_incident_id'], 'accepted incident must remain tracked for statistical updates');
+	foreach (['13:10:00', '13:12:00', '13:14:00'] as $rearmIndex => $callTime) {
+		$productionClock->now = '2026-10-18 ' . $callTime;
+		insert_cdr($productionDb, ['linkedid' => 'production-rearm-' . $rearmIndex, 'calldate' => $productionClock->now]);
+		$productionRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+		$productionAlerts->run(['alert_history_prune_policy' => 'never']);
+		if ($rearmIndex === 0) {
+			assert_same('closed', $productionDb->query('SELECT state FROM repeatcaller_incidents WHERE id = ' . $productionIncident)->fetchColumn(), 'observed clearing must close the accepted incident');
+		}
+	}
+	$productionFreshIncident = (int)$productionDb->query('SELECT MAX(id) FROM repeatcaller_incidents')->fetchColumn();
+	assert_true($productionFreshIncident !== $productionIncident, 'a new qualifying episode must have a new incident ID');
+	assert_same(2, (int)$productionDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'rearming with zero suppression must permit the new incident');
+	assert_same(5, (int)$productionDb->query("SELECT COUNT(*) FROM repeatcaller_incident_alert_history WHERE incident_id = {$productionFreshIncident} AND event_type = 'initial'")->fetchColumn(), 'the fresh incident must generate its own GUI, three emails and Alert Call');
+	assert_same(6, count($productionEmails->calls), 'the new episode must deliver a fresh set of initial emails');
+	assert_same(2, count($productionCalls->calls), 'the new episode must initiate its own Alert Call');
+	assert_same($productionHistory, $productionDb->query('SELECT * FROM repeatcaller_incident_alert_history WHERE incident_id = ' . $productionIncident . ' ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), 'closure and a new episode must not alter accepted incident notification history');
+
+	foreach (['any', 'withheld_only'] as $anonymousCallerMode) {
+		foreach ([0, 30] as $anonymousSuppression) {
+			[$anonymousDb, $anonymousRepository] = create_runtime_environment(':memory:', '2026-07-13 09:02:30');
+			$anonymousClock = new InvertTestClock('2026-07-13 09:02:30');
+			$anonymousScanner = new CdrScanner($anonymousDb, $anonymousClock);
+			$anonymousRuntime = new BackgroundProcessor($anonymousDb, $anonymousRepository, $anonymousScanner, $anonymousClock);
+			$anonymousEmails = new FakeEmailSender();
+			$anonymousCalls = new FakeCallSender();
+			$anonymousAlerts = new IncidentAlertProcessor($anonymousRepository, $anonymousEmails, $anonymousClock, $anonymousCalls);
+			insert_route($anonymousDb, '18005550001', '', 'Anonymous route');
+			$anonymousRule = insert_rule($anonymousDb, [
+				'name' => 'Anonymous lifecycle', 'threshold_count' => 2, 'observation_window_minutes' => 5,
+				'caller_mode' => $anonymousCallerMode, 'suppression_minutes_override' => $anonymousSuppression,
+				'email_enabled' => 1, 'email_recipients' => 'alerts@example.invalid',
+				'alert_call_enabled' => 1, 'alert_call_destinations' => '201', 'alert_reminder_mode_override' => '5m',
+				'schedules' => [['day' => 1, 'start' => '09:00', 'end' => '17:00']],
+			]);
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-one', 'calldate' => '2026-07-13 09:01:00', 'src' => 'anonymous', 'clid' => '"Anonymous" <anonymous>']);
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-one', 'calldate' => '2026-07-13 09:01:02', 'src' => 'anonymous', 'clid' => '"Anonymous" <anonymous>', 'channel' => 'Local/201@from-internal']);
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-two', 'calldate' => '2026-07-13 09:02:00', 'src' => 'restricted', 'clid' => '"Private" <restricted>']);
+			$anonymousSummary = $anonymousRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+			assert_same(2, $anonymousSummary['new_journeys'], 'anonymous call legs must collapse into two distinct tracked journeys');
+			assert_same(1, $anonymousSummary['incidents_created'], 'anonymous calls must meet the real detector threshold in ' . $anonymousCallerMode);
+			$anonymousIncident = $anonymousDb->query('SELECT * FROM repeatcaller_incidents')->fetch(PDO::FETCH_ASSOC);
+			assert_same(1, (int)$anonymousIncident['withheld_caller'], 'anonymous incidents must preserve the withheld marker');
+			assert_same(null, $anonymousIncident['caller_normalized'], 'anonymous incidents must not claim a known telephone number');
+			assert_true(strpos($anonymousIncident['subject_key'], 'withheld|route:') === 0, 'anonymous subjects must be grouped by the shared withheld identity and inbound route');
+			assert_same(2, (int)$anonymousDb->query("SELECT COUNT(*) FROM repeatcaller_seen_calls WHERE caller_normalized = 'withheld'")->fetchColumn(), 'formatted restricted identities must survive pre-evaluation journey reservation');
+			$anonymousAlerts->run(['alert_history_prune_policy' => 'never']);
+			assert_same(1, count($anonymousEmails->calls), 'a qualifying anonymous incident must deliver its initial email');
+			assert_same(1, count($anonymousCalls->calls), 'a qualifying anonymous incident must initiate its initial Alert Call');
+			assert_true($anonymousRepository->acceptActiveIncident((int)$anonymousIncident['id'], 'operator', '2026-07-13 09:03:00', 'gui'), 'anonymous incidents must follow normal acceptance');
+			$anonymousClock->now = '2026-07-13 09:04:30';
+			insert_cdr($anonymousDb, ['linkedid' => 'anonymous-three', 'calldate' => '2026-07-13 09:04:00', 'src' => '', 'clid' => '"Unavailable" <>']);
+			$anonymousRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+			$anonymousAlerts->run(['alert_history_prune_policy' => 'never']);
+			assert_same(3, (int)$anonymousDb->query('SELECT matched_call_count FROM repeatcaller_incidents')->fetchColumn(), 'continued anonymous activity must update the accepted rolling count');
+			assert_same(1, count($anonymousEmails->calls), 'anonymous grouping must not bypass acceptance');
+			foreach (['09:20:00', '09:21:00'] as $anonymousIndex => $anonymousTime) {
+				$anonymousClock->now = '2026-07-13 ' . $anonymousTime;
+				insert_cdr($anonymousDb, ['linkedid' => 'anonymous-rearm-' . $anonymousIndex, 'calldate' => $anonymousClock->now, 'src' => '', 'clid' => 'unknown']);
+				$anonymousRuntime->run(['enabled' => '1', 'default_country_code' => '44']);
+				$anonymousAlerts->run(['alert_history_prune_policy' => 'never']);
+			}
+			$anonymousExpectedIncidents = $anonymousSuppression === 0 ? 2 : 1;
+			assert_same($anonymousExpectedIncidents, (int)$anonymousDb->query('SELECT COUNT(*) FROM repeatcaller_incidents')->fetchColumn(), 'anonymous rearming must respect the existing suppression lifecycle');
+			assert_same($anonymousExpectedIncidents, count($anonymousEmails->calls), 'only permitted fresh anonymous incidents may generate new initial alerts');
+			assert_same($anonymousSuppression === 0 ? 0 : 1, count($anonymousRepository->loadSuppressedIncidentHistory()), 'active suppression must record the blocked new anonymous episode');
+		}
+	}
+
 	$dbPath4 = tempnam(sys_get_temp_dir(), 'repeatcaller_runtime_');
 	if ($dbPath4 === false) {
 		throw new RuntimeException('Unable to create fourth runtime contract SQLite file');
