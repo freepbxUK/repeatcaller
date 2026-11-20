@@ -4,6 +4,36 @@ Use this checklist for real FreePBX installation testing on FreePBX 16 and 17
 with MySQL/MariaDB. The 1.2.0 branch is development code, not a signed release;
 stage its checkout or package in the module directory and use `installlocal`.
 
+## Release-blocking 1.1.0-to-1.2.0 Upgrade Acceptance
+
+Status: **NOT VERIFIED; release-blocking.** No completed live upgrade evidence
+is recorded here. Complete and record every check independently on FreePBX 16
+and FreePBX 17 before release approval. The intended release-history date is
+20 November 2026; if the actual publication date changes, correct it before
+signing.
+
+Use a disposable system for each platform. Start with the actual published,
+signed 1.1.0 module installed through Module Admin, confirm its version and
+signature, and preserve a restorable backup. Do not substitute a development
+checkout or unsigned package for the 1.1.0 starting point. Upgrade with the
+actual signed `RepeatCaller-1.2.0.tgz` through Module Admin, not `installlocal`.
+
+| Acceptance check | FreePBX 16 | FreePBX 17 |
+| --- | --- | --- |
+| Published signed 1.1.0 installed through Module Admin; version and signature verified | Not run | Not run |
+| Signed 1.2.0 archive installs/upgrades successfully through Module Admin; version and signature verified | Not run | Not run |
+| Existing rules and settings are preserved | Not run | Not run |
+| Existing incidents, alert history, and suppression history are preserved | Not run | Not run |
+| Legacy module fragment and exact managed include migrate safely; unmanaged references fail closed without changing administrator files | Not run | Not run |
+| Apply Config/reload produces the expected BMO dialplan without duplicate or legacy contexts, custom files, or administrator includes | Not run | Not run |
+| Alert Call completes with expected Caller ID name/number and privacy presentation | Not run | Not run |
+| GUI and telephone acceptance stop further eligible notifications; suppression clear/rearm and subsequent suppression behave correctly | Not run | Not run |
+
+For each platform, record FreePBX/PBXact, framework/Core, PHP, Asterisk,
+channel-driver, and handset versions; before/after module and signature status;
+sanitised Module Admin, dialplan, alert, and database evidence; and any
+deviations. Do not mark an unperformed or partially evidenced check as passed.
+
 ## Fresh Install
 
 1. Stage module files in `/var/www/html/admin/modules/repeatcaller/`, then
@@ -109,6 +139,59 @@ php tests/repeat_release_contract.php
 
 The alerting contract covers first-destination NOANSWER progression, cumulative Ordered stages, mixed Keep Trying values, waiting for all sibling attempts, repeated stages after the final destination, acceptance and late-callback protection, Ring All editor and destination behaviour, and Ignore Callers separation. The admin and release contracts cover the Ring All/Ordered editor round-trip and documentation/help-text parity.
 
+## Release package validation
+
+Run the isolated packaging tests, which exercise exact file manifests,
+determinism, required runtime files, path/symlink/mode rejection, checksum
+verification, independent extraction, and signature-verifier gating:
+
+```bash
+python3 -m unittest tests/test_package_release.py -v
+```
+
+An unsigned development archive is not a production release. The signed path
+requires the authorised signing process and an approved verifier; never add a
+private key or credentials to the repository or package.
+
+The repository packager stages only production module files and writes
+deterministic archives outside the source tree. Prepare an unsigned candidate
+for isolated testing with:
+
+```bash
+python3 scripts/package_release.py prepare \
+	--source "$PWD" \
+	--stage /tmp/repeatcaller-1.2.0/staging/repeatcaller
+python3 scripts/package_release.py package \
+	--stage /tmp/repeatcaller-1.2.0/staging/repeatcaller \
+	--output-dir /tmp/repeatcaller-1.2.0/artifacts \
+	--kind unsigned-development
+```
+
+`prepare` writes an external source manifest, excludes source `module.sig`, and
+performs pre-sign validation. For an authorised signed release, the maintainer
+signs that staged tree using the established signing identity and does not
+change staged files afterwards. Before signed packaging, configure the actual
+authorised verifier executable and supply its path with
+`--signature-verifier /absolute/path/to/authorised-verifier`. It receives the
+module-root path as its only argument and must return success only for a valid
+signature. The packager invokes it on both the staged tree and an independent
+archive extraction; both checks must pass. The packager does not sign files or
+contain signing credentials.
+
+## Automated repository checks
+
+Run all ten PHP contract suites and the packaging tests from the repository
+root:
+
+```bash
+for test in tests/repeat_*_contract.php; do php "$test" || exit 1; done
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_package_release.py -v
+```
+
+Validate module metadata and run PHP syntax checks on changed PHP files as
+appropriate. These automated checks do not replace the live FreePBX release
+gate above.
+
 ## 1.2.0 Acceptance and Suppression Regression
 
 Run the repository contract as well as the alerting, completion, and runtime
@@ -167,7 +250,7 @@ The old summary helper contained references to an undefined
 playback, which builds the summary and handles DTMF in the AGI session; the
 unreachable helper and references are removed. Live PBX testing must confirm
 generated playback, acceptance, decline, unanswered disposition, and reload
-behavior on FreePBX 16 and 17.
+behaviour on FreePBX 16 and 17.
 
 ## 1.2.0 Internal Alert Call Caller Name
 
@@ -332,11 +415,11 @@ Timeout and stage-timing checks:
 
 ## Upgrade and Preservation
 
-Use a disposable FreePBX/PBXact test system with the published 1.0.2
+Use a disposable FreePBX/PBXact test system with the published 1.1.0
 installation as the starting point. The contract suites do not prove a live
-1.0.2-to-1.2.0 data or dialplan migration; record the starting module version,
+1.1.0-to-1.2.0 data or dialplan migration; record the starting module version,
 back up the test data, and verify rules, incidents, alert history and generated
-dialplan after the upgrade. Do not treat 1.1.0 as an intermediate release.
+dialplan after the upgrade.
 
 The BMO preflight and cleanup contracts cover a clean config directory, an
 exact managed include with and without its fragment, unmanaged-only and
@@ -370,10 +453,40 @@ grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 ```
 Confirm the module listing and metadata report 1.2.0. This development checkout
 is unsigned; test signature handling only with a separately verified published
-package. The 1.0.2-to-1.2.0 upgrade must be exercised on a disposable PBX test
+package. The 1.1.0-to-1.2.0 upgrade must be exercised on a disposable PBX test
 system before claiming live upgrade verification.
 40. Confirm rules, incidents, and history remain intact.
 41. Review uninstall warning and cleanup expectations before removal.
+
+## GUI Uninstall and Removal Acceptance
+
+Status: **NOT VERIFIED.** Complete this test independently on FreePBX 16 and
+FreePBX 17. Record the FreePBX/PBXact, framework/Core, PHP, and Asterisk
+versions, screenshots or sanitised logs, and each actual result. Do not mark an
+unperformed check as passed. This workspace has no live Module Admin instance;
+the exact GUI labels and Remove behavior require platform verification.
+
+| Acceptance check | FreePBX 16 | FreePBX 17 |
+| --- | --- | --- |
+| Locate Repeat Caller in Admin → Module Admin and invoke Uninstall with confirmation | Not run | Not run |
+| Confirm the Repeat Caller uninstall hook executes | Not run | Not run |
+| Confirm module-owned rules, schedules, global settings, incidents, alert/suppression history, and internal state tables are removed | Not run | Not run |
+| Confirm the registered `repeatcaller :: monitor` job is removed | Not run | Not run |
+| Confirm the deployed `repeatcaller_alert_response.php` AGI is removed | Not run | Not run |
+| Confirm legacy fragment and exact managed include are removed; unrelated `extensions_custom.conf` bytes are preserved | Not run | Not run |
+| Apply Config and confirm generated Repeat Caller dialplan contexts are absent | Not run | Not run |
+| Confirm Module Admin Uninstall leaves module files and that optional Remove deletes them only after successful uninstall | Not run | Not run |
+| Confirm no module files remain after optional Remove | Not run | Not run |
+| Fresh-install Repeat Caller after uninstall, with and without the optional Remove step | Not run | Not run |
+
+Back up the installation before testing. Capture table names and administrator
+dialplan contents before uninstall, then compare after cleanup and Apply Config.
+Test both a clean legacy configuration and an unmanaged legacy include: the
+unmanaged-reference case must fail closed without modifying
+`extensions_custom.conf` or deleting the referenced fragment. Inspect FreePBX
+logs for job, table, or AGI cleanup failures. Do not use Remove before
+Uninstall, and do not treat filesystem removal as proof that the uninstall hook
+ran.
 
 ## Caller ID Managed Elsewhere Check
 
@@ -385,10 +498,10 @@ system before claiming live upgrade verification.
 47. Tick it again and save.
 48. Reopen the rule and confirm the field is blank and the previous value has been forgotten.
 
-## Unreleased Administration Regression Checks
+## 1.1.0 Administration Regression Checks
 
-These checks cover work developed after 1.0.2 and originally tracked during
-1.1.0 development; they do not describe a published 1.1.0 release.
+These checks cover administration features published in the signed 1.1.0
+release.
 
 49. In the rule editor, add an Alert Call destination using Add, then repeat using Enter; confirm both methods behave the same.
 50. Confirm Alert Call destination changes keep the associated Ignore these callers entry consistent without creating duplicate destinations.
@@ -451,3 +564,22 @@ ORDER BY created_at DESC;
 
 Uninstall drops Repeat Caller-owned tables, including incidents and alert history.
 Back up data first if you need to preserve installation-test results.
+
+## Contribution disclosure
+
+Disclose generative AI assistance in every commit containing AI-assisted
+changes using the established trailer:
+
+```text
+Assisted-by: AGENT_NAME:MODEL_VERSION
+```
+
+The 1.1.0 pagination work was assisted by GitHub Copilot GPT-6 Luna; its
+recorded trailer is:
+
+```text
+Assisted-by: GitHub-Copilot:gpt-6-luna
+```
+
+The human contributor remains responsible for the contribution. AI tools must
+not be listed as co-authors.

@@ -6,23 +6,20 @@ threshold; Invert mode detects when fewer than the expected number of matching
 calls occur. Incidents can be reviewed in the GUI and can trigger optional
 email and Alert Call notifications.
 
-## Release Status
+## Release Information
 
-The last published release is 1.0.2. Version 1.1.0 was used for development
-work but was never published as a release. Version 1.2.0 is under development
-on the `1-2-0_Dev` branch and is intended to be the next release, consolidating
-all development since 1.0.2. It has not been published, signed, or approved for
-production use.
+Repeat Caller 1.2.0 follows version 1.1.0, the first signed FreePBX UK
+release. For a new installation or upgrade, use the official signed
+`RepeatCaller-1.2.0.tgz` package. Verify its checksum and FreePBX module
+signature before installation.
 
 FreePBX module signing uses a developer GPG key certified by the FreePBX
-Module Signing v2 master key. The signing guidance below documents how to
-verify that trust chain; it does not assert that a particular release was
-signed.
+Module Signing v2 master key. Use the signing guidance below to verify that
+trust chain for the release package you install.
 
 The official project repository is
-[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller). Use a
-verified 1.0.2 archive for the last published release. The repository branches
-contain development code; use `1-2-0_Dev` only on a test system.
+[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller). Verify the
+official 1.2.0 package using the procedure below.
 
 ## Introduction
 
@@ -57,9 +54,7 @@ Use with FreePBX/PBXact 16 or 17.
 ### Upgrade compatibility
 
 Repeat Caller 1.0.0 is not a supported upgrade source for later releases.
-Upgrade compatibility starts from the published 1.0.2 baseline. A live upgrade
-from 1.0.2 to 1.2.0 has not yet been verified; test that path before production
-use.
+Upgrade compatibility includes the 1.1.0 release.
 
 ## Requirements
 
@@ -79,32 +74,33 @@ use.
 
 ## Installing
 
-Repeat Caller is not listed in the FreePBX online module repository. Select
-the source deliberately: use a verified 1.0.2 archive for the last published
-release, or use the `1-2-0_Dev` branch for testing. Do not install a development
-checkout on a production PBX. Place local module files at
-`/var/www/html/admin/modules/repeatcaller/`, then run
-`fwconsole ma installlocal repeatcaller` to register/install or upgrade the
-local files, enable the module if needed, and reload FreePBX. Run fwconsole
-commands from a neutral directory
-(`cd ~`).
+Repeat Caller is not listed in the FreePBX online module repository. Install
+or upgrade using the official signed `RepeatCaller-1.2.0.tgz` package through
+Module Admin.
 
-### Option 1: Install the published 1.0.2 release
+## Install or Upgrade from the Official 1.2.0 Package
 
-Use the verified 1.0.2 release archive from your trusted source. The local Git
-history identifies 1.0.2 as the last published version, but does not establish
-the signature status of every distributed archive. Stage the module files in
-`/var/www/html/admin/modules/repeatcaller/`, then run:
+Download `RepeatCaller-1.2.0.tgz` and its matching
+`RepeatCaller-1.2.0.tgz.sha256` file from the official release distribution.
+Verify archive integrity before upload:
 
 ```sh
-cd ~
-fwconsole ma installlocal repeatcaller
-fwconsole ma enable repeatcaller
-fwconsole chown
-fwconsole reload
+sha256sum -c RepeatCaller-1.2.0.tgz.sha256
 ```
 
-### Option 2: Install the 1.2.0 development branch for testing
+SHA-256 verifies that the archive bytes match the supplied checksum; it does
+not authenticate the publisher or replace FreePBX module-signature
+verification. FreePBX verifies a valid module signature separately when the
+signed package is uploaded and its signing key is trusted.
+
+In FreePBX/PBXact, open **Admin → Module Admin → Upload Modules**, select
+`RepeatCaller-1.2.0.tgz`, and upload it. Install it on a fresh system or choose
+Upgrade for an existing installation. Enable Repeat Caller if needed, then
+select Apply Config. Confirm Module Admin reports version `1.2.0` and the module
+page loads. Do not uninstall before upgrading; uninstall deletes rules,
+settings, incidents, and alert history.
+
+## Development Installation (Testing Only)
 
 Git commands require the modules/repository directory context. After cloning,
 switch back to a neutral directory before running fwconsole commands.
@@ -151,13 +147,11 @@ fwconsole chown
 fwconsole reload
 ```
 
-### Option 3: Install a future signed 1.2.0 package or another local copy
+### Install from a local development copy
 
-After 1.2.0 is formally released and signed, stage that verified package here.
-Until then, do not treat the development checkout as a signed release. To use
-another local development copy, copy or symlink its `repeatcaller` directory into
-`/var/www/html/admin/modules/repeatcaller/`, then run the fwconsole commands
-from a neutral directory:
+For development testing, copy or symlink a local `repeatcaller` directory into
+`/var/www/html/admin/modules/repeatcaller/`, then run fwconsole commands from
+a neutral directory:
 
 ```sh
 cd ~
@@ -178,19 +172,14 @@ script. Legacy module-owned dialplan artefacts are also cleaned up selectively;
 unrelated administrator dialplan content is retained.
 Uninstalling therefore deletes stored module data; use an update operation
 instead.
+Before upgrading, create a restorable backup of the PBX configuration and
+Repeat Caller database so the existing rules, settings, incidents, and alert
+history can be recovered if needed.
 
-1.1.0 was not released and is not an upgrade prerequisite. The intended direct
-upgrade to the forthcoming 1.2.0 is from 1.0.2, but this path has not yet been
-verified on a live PBX; validate it on a FreePBX/PBXact test system before
-production use.
-
-Migration ordering: on FreePBX 16.0.45, the BMO `install()` hook runs before
-legacy `install.php`. BMO now performs a read-only legacy-include preflight
-before schema creation; `install.php` repeats the preflight before its own
-schema call. The legacy hook then ensures the schema, deploys the AGI, removes
-the module-owned legacy dialplan, and registers the job. Apply Config or reload
-is still required to write the BMO-generated contexts. The FreePBX 17 hook
-ordering has not been verified live.
+Each installation hook performs a read-only legacy-include preflight before
+its schema operation. The legacy hook ensures the schema, deploys the AGI,
+removes the module-owned legacy dialplan, and registers the job. Apply Config
+or reload writes the BMO-generated contexts.
 
 The hooks are not one transaction. If the first preflight finds an unmanaged
 reference, it stops before the BMO schema changes. If configuration changes
@@ -198,8 +187,9 @@ after that check, or a later filesystem operation fails, the BMO schema may
 already have been created or migrated; the legacy cleanup rechecks before
 editing, and no database rollback is attempted. Schema installation is
 idempotent and existing rules/history are preserved. Resolve the reported
-administrator include, then rerun the local module upgrade, enable the module
-if needed, and reload; cleanup and job registration can then complete. An AGI
+administrator include, then retry the upgrade through Module Admin, enable the
+module if needed, and select Apply Config; cleanup and job registration can
+then complete. An AGI
 deployment completed before a later cleanup conflict is harmless to the
 administrator dialplan and is replaced on retry.
 
@@ -210,19 +200,15 @@ fwconsole ma list | grep -i repeatcaller
 grep "<version>" /var/www/html/admin/modules/repeatcaller/module.xml
 ```
 
-### Option 1: Update from the 1.0.2 archive or a future signed 1.2.0 package
+### Upgrade from 1.1.0 to 1.2.0
 
-Replace the module files in `/var/www/html/admin/modules/repeatcaller/`, then
-run the local module upgrade, enablement check, and reload from a neutral
-directory:
-
-```sh
-cd ~
-fwconsole ma installlocal repeatcaller
-fwconsole ma enable repeatcaller
-fwconsole chown
-fwconsole reload
-```
+Download `RepeatCaller-1.2.0.tgz` and its matching
+`RepeatCaller-1.2.0.tgz.sha256`; verify the archive as described under
+Installing. In FreePBX/PBXact, open **Admin → Module Admin → Upload Modules**,
+upload `RepeatCaller-1.2.0.tgz`, and select Upgrade for the existing 1.1.0
+installation. Do not uninstall first. Enable the module if necessary and select
+Apply Config. Confirm the installed version is `1.2.0` and verify existing
+rules, settings, incidents, and alert history remain present.
 
 ### Option 2: Update a development Git checkout for testing
 
@@ -258,9 +244,7 @@ Do not use an online repository upgrade for this development version; it is not
 published there. `installlocal` runs install or upgrade hooks against the
 checked-out files, `enable` ensures the module is enabled, and `reload` applies
 generated dialplan. Run Git commands only when the installed module directory
-contains a `.git` directory. A Git fast-forward is not evidence that a 1.0.2 to
-1.2.0 live PBX upgrade has been verified; use a test PBX and confirm rules,
-incidents, alert history and generated dialplan before production use.
+contains a `.git` directory.
 
 ### Option 3: Update from a local copy
 
@@ -355,8 +339,8 @@ grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 ### Signature warnings for a published package
 
 Use this procedure only for a published package whose signing status has been
-independently established. It does not imply that development version 1.1.0 or
-1.2.0 was published or signed.
+independently established. Verify each package's own signature and do not infer
+the signing status of one release from another.
 
 First confirm that the signed release files were actually installed. Check the
 FreePBX module listing, the installed `module.xml`, and the signature file:
@@ -662,10 +646,10 @@ Code.
 
 Marked Repeat Caller Alert Calls establish `CALLERID(name)=Repeat Caller` on
 the originating launch channel before dialling the existing FreePBX destination.
-This follows the live-tested application-originated call approach, without
-pretending to be an extension. No caller number is generated or changed, and
-privacy flags are not modified. An explicitly configured Alert Call Caller ID
-number remains in place; managed-elsewhere number selection is unchanged.
+This uses the application-originated call path and does not impersonate an
+extension. No caller number is generated or changed, and privacy flags are not
+modified. An explicitly configured Alert Call Caller ID number remains in
+place; managed-elsewhere number selection is unchanged.
 
 FreePBX can replace the full identity while processing an internal call. An
 additive BMO call at its `macro-user-callerid` continuation re-establishes the
@@ -677,8 +661,9 @@ Only `CALLERID(name)` is assigned; the old connected-line handler is removed.
 FreePBX's SIP-header handler and all caller numbers, privacy settings, routes,
 destinations, playback and response handling remain unchanged.
 
-The expected live result is: extension rings, primary name `Repeat Caller`.
-A secondary IP address is acceptable and is not removed by inventing a number.
+For internal destinations, the primary caller name is `Repeat Caller`. A
+handset may also display a secondary IP address; Repeat Caller does not invent
+a caller number to change that display.
 All Repeat Caller Alert Call contexts are contributed through FreePBX BMO
 generation and appear in `extensions_additional.conf` after reload. Repeat
 Caller owns no custom Asterisk `.conf` file and does not add an include to or
@@ -688,13 +673,10 @@ other administrator configuration. If an active unmanaged include still
 references the legacy fragment after the exact managed block is removed in
 memory, cleanup aborts before changing either file; resolve that administrator
 reference and retry the upgrade or uninstall.
-Forwarding and SIP redirects require live validation. Independent channel
-snapshots do not establish real forwarding behavior or identity isolation.
-Test CF, Follow Me, redirects, queues, Ring Groups and mixed destinations against
-baseline; external identities must remain unchanged. Custom dialplan that bypasses
-FreePBX's normal user/trunk identity contexts needs particular live verification.
-Initial SIP identity, endpoint privacy, From-user overrides, and handset
-display policies also require PBX testing.
+Forwarding, SIP redirects, queues, Ring Groups, and custom dialplans may apply
+additional routing or caller-presentation rules. External identity, privacy,
+From-user overrides, and handset display remain subject to FreePBX, trunk,
+provider, and endpoint policy.
 
 Alert Call destinations and Alert Call caller ID values are administrator-
 controlled PBX configuration. Only use trusted values that are appropriate for
@@ -1036,88 +1018,11 @@ UI refresh behaviour uses AJAX command allowlisting and section change tokens so
 only changed sections refresh. Tables remain in local responsive wrappers with
 horizontal scroll where needed.
 
-## Design Notes and Development Considerations
-
-### FreePBX Routing and Dialling
-
-Repeat Caller is an administrator-configured FreePBX/PBXact module. Alert Call
-destinations, caller ID, recordings, and outbound routing remain governed by
-the PBX configuration. Repeat Caller does not replace FreePBX outbound routes
-or impose an alternative dialling policy. The PBX administrator remains
-responsible for ensuring configured destinations, caller presentation, and
-routing behaviour is appropriate for the deployment.
-
-### Domain-focused Components
-
-Repeat Caller keeps core incident, alerting, and persistence logic close to
-the operational workflows they support. Some components intentionally contain
-multiple related operations because they represent a single domain area,
-rather than splitting closely related behaviour across many small classes with
-limited value.
-
-### CDR-based Detection
-
-Repeat Caller uses CDR-based analysis rather than attempting to replace the
-live call-processing path. This provides reliable historical context for
-repeat activity windows while remaining compatible with the wide variety of
-FreePBX routing configurations.
-
-Repeat Caller detects caller activity from PBX CDR data. Highly customised
-dialplans, unusual call flows, incomplete CDR records, or carrier-specific
-number presentation can affect how calls are observed and matched. Production
-rules should be tested with representative calls before they are relied on for
-operational handling.
-
-### Administrator Trust Boundary
-
-As with FreePBX itself, Repeat Caller assumes configuration is performed by a
-trusted administrator. It does not attempt to duplicate outbound route
-controls, dial plan policy, or PBX security decisions.
-
-### Administrative Configuration
-
-The module is designed for trusted PBX administrators. It provides sensible
-handling for common inputs, but it does not attempt to prevent every possible
-configuration choice that a PBX administrator may intentionally apply.
-
-### Incident Acceptance Behaviour
-
-Accepting an incident records responsibility and controls alert delivery for
-that incident. It does not start, extend, or reset the suppression period.
-While the qualifying condition remains active, matching activity continues to
-update the accepted incident and no additional alerts or reminders are sent.
-Once the condition clears and the latch re-arms, any new qualifying episode is
-a separate event: if suppression has not yet expired it is blocked and recorded
-in Suppressed Incidents; if suppression has already expired the new episode
-creates a new incident and follows the normal alert process.
-
-GUI and telephone acceptance stop all further notification cycles for that
-incident, regardless of reminder mode, disabled suppression, or suppression
-expiry. Queued email and Alert Call attempts are cancelled where still possible;
-previously delivered alert history is preserved. State is checked again before
-email delivery, but a message already handed to the mailer cannot be recalled,
-and acceptance can race with the final external transport handover.
-
-### Compatibility and Development Notes
-
-Legacy compatibility handling remains where required for upgrades and existing
-stored data. Internal compatibility identifiers may remain in code or stored
-values where needed, while operator-facing text uses current product language.
-This is intentional so upgrades can preserve data integrity without carrying
-legacy terminology into active administration workflows.
-
-### FreePBX-Native Design
-
-Repeat Caller is built around existing FreePBX concepts rather than
-attempting to create a separate telephony layer. It works with established
-FreePBX components including inbound routes, scheduled jobs, CDR data, System
-Recordings, and administrator-controlled routing.
-
 ## Security Model
 
 - Fixed AJAX command allowlist in controller dispatch.
 - Module-owned session CSRF token required for AJAX handlers.
-- Input normalization and bounded numeric validation for settings/rule fields.
+- Input normalisation and bounded numeric validation for settings/rule fields.
 - Settings writes are key-allowlisted.
 - SQL operations use prepared statements in repository/controller paths.
 - Reconcile lock uses database named locks to prevent concurrent monitor runs.
@@ -1134,6 +1039,8 @@ Recordings, and administrator-controlled routing.
 - Detection depends on CDR visibility/completion timing.
 - Very short call flaps between job runs may be missed.
 - Caller and DID fidelity depends on CDR/source data quality.
+- Custom dialplans and provider-specific caller presentation can affect which
+  journeys and identities appear in CDRs and outbound calls.
 - Withheld or malformed caller identifiers can reduce matching precision.
 - Alert Call delivery depends on AMI availability, dialplan deployment,
   playback assets, and destination reachability.
@@ -1144,75 +1051,68 @@ Recordings, and administrator-controlled routing.
 - Snooze is global rather than per rule/incident.
 - No webhook or SMS delivery channel is implemented.
 
-Future release consideration:
-
-- A configurable Alert Call ring timeout is being evaluated for a future minor
-  release so administrators can better align escalation timing with downstream
-  routing policy while preserving bounded fail-safe behaviour.
-
 ## Release History
 
-### 1.2.0, under development
+### 1.2.0, 20 November 2026
 
-This planned release consolidates development since the published 1.0.2
-release, including work originally tracked under 1.1.0. Version 1.1.0 was not
-published; 1.2.0 itself remains unpublished and unsigned while in development.
+Builds on published 1.1.0 with the following administrator-facing improvements:
 
-#### Administration, usability and compatibility
+#### Detection and reporting
 
-- Adds independent 25-record server-side pagination for Active Incidents,
-  Recent Incidents, Suppressed Incidents, and Alert History, with persistent
-  per-table sorting across the full result set. Each table's sorting preference is
-  persisted independently in the database. Rules and Schedule retain their
-  existing row batching.
-- Adds a per-rule Test Email action using saved recipients, the production mail
-  transport and resolved From identity, and the configured FreePBX System
-  Identifier.
-- Improves DID route selection, including exclusive include/exclude semantics
-  and compatibility for existing route configurations.
-- Preserves configured email From display names, including FreePBX 17 encoded
-  identities; bare addresses use the FreePBX dashboard name with `Repeat
-  Caller` as fallback.
+- Corrects Any Caller matching for anonymous and withheld CDR identities,
+  including formatted restricted/unavailable values, while preserving explicit
+  exclusion, rule/route grouping, thresholds, schedules and journey deduplication.
 - Improves Run Now feedback with execution and incident counts, explains when
-  monitoring is disabled, and does not replay already processed call journeys.
-- Updates publisher, licence, repository metadata, and compatibility
-  declarations for FreePBX UK and FreePBX/PBXact 16 and 17.
+  monitoring is disabled, and does not replay already processed journeys.
 
-#### Detection and incident lifecycle
+#### Incident lifecycle and Alert Calls
 
-- Recognises anonymous, withheld, restricted, unavailable, private, unknown,
-  and formatted CDR caller identities. Any Caller rules include withheld calls
-  unless explicitly excluded; withheld calls share a subject per rule and
-  inbound route while remaining separate call journeys.
-- Preserves caller/route filters, thresholds, time windows, schedules, rolling
-  counts, and call-journey deduplication with the corrected normalisation.
-- Prevents further GUI, email, and Alert Call notifications after acceptance,
-  regardless of suppression duration. Queued work is cancelled where possible
-  and email state is rechecked before delivery; work already handed to an
-  external transport cannot be recalled.
-- Keeps accepted incident state and subject linkage authoritative during
-  suppression reconciliation. Observed clearing and rearming still allow a new
-  qualifying episode according to the configured suppression period.
+- Prevents further GUI, email, and Alert Call notifications after acceptance.
+  This applies regardless of suppression settings or expiry. Queued work is
+  cancelled where possible and email eligibility is rechecked before handoff;
+  already delivered or externally handed-off messages cannot be recalled.
+- Preserves accepted incident state and subject linkage through suppression
+  reconciliation, observed clearing and rearming.
+- Moves Alert Call dialplan generation to FreePBX BMO. Upgrade preflight checks
+  legacy references before schema changes; cleanup preserves administrator
+  dialplan and refuses unmanaged references, with a repeatable retry path.
+- Establishes the originating `Repeat Caller` caller name before dialling,
+  restores the original name before external identity processing, and removes
+  the old connected-line handler without changing caller numbers or privacy
+  flags.
+- Keeps Alert Call acknowledgement, retry, and no-response handling in the
+  interactive call flow, and records telephone acceptance or decline before
+  playing closing prompts.
 
-#### Alert Calls and upgrade reliability
+### 1.1.0, first signed FreePBX UK release, 20 October 2026
 
-- Moves Alert Call contexts to FreePBX BMO generation and selectively removes
-  the legacy module fragment and exact managed include. Cleanup refuses to
-  delete a fragment still referenced by an unmanaged include; unrelated
-  administrator dialplan is preserved.
-- Sets the originating `CALLERID(name)` to `Repeat Caller` before destination
-  dialling, reapplies it after normal internal FreePBX identity rewriting, and
-  restores the saved name before external identity processing. Caller numbers,
-  privacy flags and routing are not intentionally changed; the obsolete
-  connected-line handler is removed.
-- Removes the unused legacy summary helper and its undefined acceptance-check
-  Gosub references. The active AGI session handles summary playback, DTMF
-  acceptance/decline, retries and no-response outcomes, persisting a response
-  before closing prompts.
-- Expands regression coverage across detection, acceptance, queued notification
-  races, generated dialplan, installation and release documentation. Actual
-  BMO generation, upgrade preservation, SIP identity, forwarding and handset
-  presentation still require live FreePBX/PBXact testing.
+- First signed FreePBX UK release, published from the official
+  `freepbxUK/repeatcaller` repository.
+- Updates publisher, licence, project metadata, and release presentation for
+  FreePBX UK.
+- Preserves explicitly configured display names in FreePBX Email "From:"
+  Address values, including HTML-encoded identities on FreePBX 17. Bare
+  addresses use the configured FreePBX dashboard brand, with `Repeat Caller`
+  as the final fallback, while retaining address and header-injection
+  validation.
+- Corrects FreePBX 16 and 17 compatibility declarations in module metadata.
+- Improves Select DIDs route selection, mutual exclusion between include and
+  exclude lists, and compatibility with legacy All-DIDs exclusions without
+  changing their effective matching.
+- Adds a per-rule Test Email action using the rule's saved recipients, the
+  production email transport and resolved From identity, and the configured
+  FreePBX System Identifier. It does not add a global recipient setting.
+- Removes a redundant Alert History accepted-state JavaScript condition
+  without changing behaviour.
+- Adds independent 25-record server-side pagination for Active Incidents,
+  Recent Incidents, Suppressed Incidents, and Alert History. Sorting is applied
+  across the database result set, and each table's sorting preference is
+  persisted independently in the database.
+- Preserves the existing 15-row Rules and Schedule batching behaviour,
+  including keeping each Rules row with its explainer row.
+- Expands regression coverage for pagination beyond 300 records, full-dataset
+  sorting, preference persistence and races, suppression filtering, email
+  identity and delivery, route selection, Test Email, and FreePBX compatibility.
 
 ### 1.0.2, patch release, 24 August 2026
 
@@ -1265,7 +1165,7 @@ published; 1.2.0 itself remains unpublished and unsigned while in development.
   entry consistent without creating duplicate destinations.
 - Alert Call self-trigger warnings now remain visible for approximately
   6 seconds without changing global FreePBX toast behaviour.
-- Run Now now initializes from the current bootstrap state so initial
+- Run Now now initialises from the current bootstrap state so initial
   availability is shown correctly on load.
 
 #### DID scope controls
@@ -1349,70 +1249,88 @@ published; 1.2.0 itself remains unpublished and unsigned while in development.
 - Persisted Invert observation state is retained across normal monitor runs
   and upgrades.
 
-## Validation
+## Uninstalling
 
-For operator workflows, see [USER_GUIDE.md](USER_GUIDE.md). For test scope and
-execution notes, see [TESTING.md](TESTING.md).
+> **Data loss:** Uninstall permanently deletes Repeat Caller rules and
+> schedules, global settings, incidents, alert history, suppression history,
+> and internal detection/processing state. Create and verify a restorable
+> backup of the PBX and module data before proceeding if any of it may be
+> needed. Reinstalling Repeat Caller does not restore data deleted by uninstall.
 
-Useful local checks:
+**Upgrading from 1.1.0 to 1.2.0:** select **Upgrade** in Module Admin. Never
+select Uninstall or Remove to upgrade.
 
-```sh
-php -l Repeatcaller.class.php
-php -l Job.php
-php -l page.repeatcaller.php
-php -l install.php
-php -l uninstall.php
-php -l views/main.php
-php -l src/Schema.php
-php -l src/RepeatCallerRepository.php
-php -l src/BackgroundProcessor.php
-php -l src/CdrScanner.php
-php -l src/IncidentAlertProcessor.php
-php -r '$xml = simplexml_load_file("module.xml"); echo $xml ? "module.xml parsed\n" : "module.xml failed\n";'
-php tests/repeat_install_contract.php
-php tests/repeat_detection_contract.php
-php tests/repeat_repository_contract.php
-php tests/repeat_runtime_contract.php
-php tests/repeat_admin_contract.php
-php tests/repeat_alerting_contract.php
-php tests/repeat_completion_contract.php
-php tests/repeat_email_from_contract.php
-php tests/repeat_release_contract.php
-php tests/repeat_test_email_contract.php
-```
+### Uninstall through Module Admin
 
-On a real FreePBX/PBXact system:
+1. Open **Admin → Module Admin** and locate **Repeat Caller**.
+2. Select **Uninstall**, confirm, and allow the operation to complete.
+3. Select **Apply Config**.
+4. If you want to remove the remaining module files, select **Remove** after
+  uninstall has completed. Remove is optional; it is not required after every
+  uninstall. For permanent decommissioning, use Uninstall, Apply Config, then
+  Remove.
+
+Uninstall runs the module's cleanup hook. It removes the registered monitor job,
+drops current and known legacy Repeat Caller tables, removes the deployed AGI
+callback, and selectively removes the legacy Alert Call fragment and its exact
+managed include block. Apply Config refreshes the generated dialplan. The hook
+does not delete `extensions_custom.conf` or unrelated administrator content.
+If an unmanaged reference to the legacy fragment remains, cleanup aborts before
+editing either dialplan file or deleting the referenced fragment. Job and table
+cleanup failures are logged; AGI unlink failures are not reported by the hook.
+
+action is for deleting the remaining module files; deleting files alone does not
+After uninstall, confirm Repeat Caller is no longer installed in Module Admin,
+the monitor job and deployed AGI are absent, and no Repeat Caller tables remain.
+After Apply Config, check that generated Alert Call contexts are gone and that
+unrelated `extensions_custom.conf` content is unchanged. Module Admin's Remove
+action deletes the remaining module files only; deleting files alone does not
+run database or other uninstall cleanup. Check the job list and table names
+directly. AGI unlink failures are not reported by the hook, so check the path
+configured by `ASTAGIDIR` (or
+`/var/lib/asterisk/agi-bin` when unset).
+
+For example, inspect the installed modules and job list, check the deployed AGI
+path, and query the database:
 
 ```sh
 fwconsole ma list | grep -i repeatcaller
-fwconsole reload
-fwconsole job --list | grep -i repeatcaller
-fwconsole job --run=<job_id> --force
-tail -f /var/log/asterisk/full | grep -i repeatcaller
+fwconsole job --list
+test ! -e /var/lib/asterisk/agi-bin/repeatcaller_alert_response.php
 ```
 
-## Uninstalling
+```sql
+SHOW TABLES LIKE 'repeatcaller%';
+```
 
-Uninstall removes Repeat Caller job registration, Repeat Caller tables, the
-generated dialplan contribution on reload, and the deployed AGI callback script.
-It also selectively removes any legacy module fragment/managed include block,
-without deleting `extensions_custom.conf` or changing unrelated content. Back up first
-if you need existing rules/history. These commands run from a neutral
-directory, and the module path removal uses an absolute path.
+The AGI check uses the default path; use the configured `ASTAGIDIR` when it is
+different. After Apply Config, inspect
+`/etc/asterisk/extensions_additional.conf` for Repeat Caller contexts and
+compare `extensions_custom.conf` with the pre-uninstall backup.
+
+### Command-line uninstall (Advanced)
+
+Run the FreePBX module-management uninstall command from a neutral directory,
+then reload the dialplan:
 
 ```sh
 cd ~
 fwconsole ma uninstall repeatcaller --force
-rm -rf /var/www/html/admin/modules/repeatcaller
-fwconsole chown
 fwconsole reload
 ```
+
+This command runs the module uninstall hook but does not remove the module
+directory. Verify cleanup as described above. To remove module files, use
+Module Admin's optional Remove action only after the uninstall has completed;
+do not use filesystem deletion as a substitute for uninstall.
 
 ## Licence
 
 GPLv3+. See LICENSE.
 
 ## Support and Feedback
+
+For administrator workflows, see [USER_GUIDE.md](USER_GUIDE.md).
 
 Repeat Caller is maintained by FreePBX UK. For installation
 help, configuration questions, or troubleshooting, contact
@@ -1443,22 +1361,36 @@ minimum sanitised information needed to assess the report.
 
 ## AI-Assisted Contributions and Disclosure
 
-This module has been developed with AI assistance for code generation, review, testing, and documentation. From 26 August 2026, generative AI assistance must be disclosed in every commit containing AI-assisted changes:
+This module has been developed with AI assistance for code generation, review,
+testing, and documentation. From 26 August 2026, every commit containing
+AI-assisted contributions must include an `Assisted-by` trailer identifying the
+assistant and model used.
+
+Standard format:
 
 ```text
 Assisted-by: AGENT_NAME:MODEL_VERSION
 ```
 
-The pagination work developed during the unreleased 1.1.0 development period
-was assisted by GitHub Copilot GPT-6 Luna. Record that assistance using the
-established trailer:
+When the reasoning level and context-window size are known, the extended format
+may be used:
 
 ```text
-Assisted-by: GitHub-Copilot:gpt-6-luna
+Assisted-by: AGENT_NAME:MODEL_VERSION:REASONING-CONTEXT
 ```
 
-The human contributor remains solely responsible for the contribution. AI
-tools must not be listed as co-authors.
+For a contribution using the assistant and configuration shown, the extended
+trailer is:
+
+```text
+Assisted-by: OpenCode-Go:gpt-6-luna:Medium-272K
+```
+
+Attribution must accurately identify the assistant and configuration used for
+the contribution. Do not add reasoning or context details unless they are known.
+Human contributors remain responsible for reviewing, testing, and approving
+AI-assisted changes. AI assistants must not be identified as human contributors
+or attributed through a `Co-authored-by` trailer.
 
 ## Author
 
