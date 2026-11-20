@@ -230,10 +230,11 @@ and reload, inspect the launch, playback, and caller-name contexts in
 FreePBX-generated `extensions_additional.conf`; fresh installs must not create
 `repeatcaller_alert.conf` or add a managed include to `extensions_custom.conf`.
 The obsolete summary context must be absent.
-The install contract pins all retained launch and playback instructions to
-their migration digest, including DTMF and hangup paths, excluding only the
-added originating-name Gosub before destination Dial. The obsolete summary
-context was removed because current playback is AGI-owned.
+The install contract pins retained launch and playback instructions to their
+migration digest, including DTMF paths and the playback hangup-handler
+registration, excluding only the added originating-name Gosub before
+destination Dial. The obsolete summary context was removed because current
+playback is AGI-owned.
 
 Upgrade and uninstall share selective legacy cleanup. Test a complete managed
 block before/after unrelated dialplan, LF and CRLF files, no final newline,
@@ -243,7 +244,31 @@ the legacy module fragment may be removed. If any active unmanaged include
 remains, cleanup must abort without changing either file or deleting the
 referenced fragment. Other bytes, files, whitespace, and administrator
 configuration must remain unchanged. Run cleanup twice to check idempotence;
-never delete `extensions_custom.conf` itself.
+never delete `extensions_custom.conf` itself. On both FreePBX 16 and 17, record
+`extensions_custom.conf` owner, group, mode, inode, and full content before and
+after a normal upgrade. Confirm an atomic replacement preserves the owner,
+group, mode, and all bytes outside the exact managed block. On a disposable
+system, make the containing directory non-writable and retry cleanup: the
+original custom file and legacy fragment must remain recoverable, with no temp
+file left behind. Then restore access and confirm a subsequent retry completes.
+Simulated filesystem tests do not establish production Asterisk filesystem,
+service-account, ACL, or SELinux/AppArmor behaviour.
+
+Live Alert Call AstDB cleanup is release-blocking verification on FreePBX 16 and
+17. Before each test, note the alert-history ID and inspect the four
+`repeatcaller/alertcall/<history-id>/{launch,playback}_{channel,uniqueid}` keys.
+Verify all playback keys are removed after normal completion, early callee
+hangup during prompts, and AMI Hangup. For remote acceptance, verify the
+answered sibling reaches the accepted-elsewhere prompts, then removes only its
+own playback and launch keys. Test an AMI redirect away from the playback
+context and confirm the attached hangup handler still cleans the attempt when
+the call ends. Confirm unrelated attempts keep their keys while active and that
+repeated cleanup after a call is harmless. Controlled stale-reference testing
+must use only a disposable PBX: if a stored channel name resolves to a
+channel with a different uniqueid, remote acceptance must not redirect or hang
+up that channel. These checks must be observed on real FreePBX 16 and FreePBX 17
+installations; record the actual Asterisk version for each test. AMI and channel
+lifecycle behavior cannot be proven by contract simulations.
 
 The old summary helper contained references to an undefined
 `repeatcaller-alert-accept-check` subroutine. It was not called by current

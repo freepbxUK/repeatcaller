@@ -114,6 +114,57 @@ assert_true(strpos($installSource, 'AGI(repeatcaller_alert_response.php,${REPEAT
 preg_match('/\[repeatcaller-alert-playback\]([\s\S]*)$/', $installSource, $playbackMatch);
 assert_true(!empty($playbackMatch[1]), 'generated playback context should be present for remote-accept prompt regression checks');
 $playbackBlock = $playbackMatch[1];
+assert_true(strpos($playbackBlock, 'Set(CHANNEL(hangup_handler_push)=repeatcaller-alert-playback-cleanup,s,1)') !== false, 'answered playback must attach a hangup handler before entering interactive playback');
+$cleanupMatch = preg_match('/\[repeatcaller-alert-playback-cleanup\]([\s\S]*?)\n\z/', $playbackBlock, $cleanupMatches);
+assert_true($cleanupMatch === 1, 'generated dialplan should include the playback cleanup handler context');
+$playbackCleanupBlock = (string)$cleanupMatches[1];
+assert_true(strpos($playbackCleanupBlock, 'DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)') !== false, 'playback cleanup must compare the stored channel owner');
+assert_true(strpos($playbackCleanupBlock, 'DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)') !== false, 'playback cleanup must compare the stored channel uniqueid');
+assert_true(strpos($playbackCleanupBlock, 'DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)') !== false, 'playback cleanup must remove the owned channel record');
+assert_true(strpos($playbackCleanupBlock, 'DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)') !== false, 'playback cleanup must remove the owned uniqueid record');
+
+$simulatePlaybackHangupCleanup = static function (array $astDb, int $historyId, string $channel, string $uniqueid) use ($playbackCleanupBlock): array {
+	$channelKey = 'repeatcaller/alertcall/' . $historyId . '/playback_channel';
+	$uniqueidKey = 'repeatcaller/alertcall/' . $historyId . '/playback_uniqueid';
+	$handlerHasOwnershipGuards = strpos($playbackCleanupBlock, '"${CHANNEL(name)}"') !== false
+		&& strpos($playbackCleanupBlock, '"${CHANNEL(uniqueid)}"') !== false
+		&& strpos($playbackCleanupBlock, 'DB_DELETE') !== false;
+	if ($handlerHasOwnershipGuards
+		&& (string)($astDb[$channelKey] ?? '') === $channel
+		&& (string)($astDb[$uniqueidKey] ?? '') === $uniqueid) {
+		unset($astDb[$channelKey], $astDb[$uniqueidKey]);
+	}
+	return $astDb;
+};
+$normalCleanupDb = [
+	'repeatcaller/alertcall/10/playback_channel' => 'Local/1000@from-internal-0010;2',
+	'repeatcaller/alertcall/10/playback_uniqueid' => 'uid-10',
+];
+$normalCleanupDb = $simulatePlaybackHangupCleanup($normalCleanupDb, 10, 'Local/1000@from-internal-0010;2', 'uid-10');
+assert_same([], $normalCleanupDb, 'normal Alert Call completion must remove its playback AstDB records');
+$earlyHangupDb = [
+	'repeatcaller/alertcall/11/playback_channel' => 'Local/1000@from-internal-0011;2',
+	'repeatcaller/alertcall/11/playback_uniqueid' => 'uid-11',
+];
+$earlyHangupDb = $simulatePlaybackHangupCleanup($earlyHangupDb, 11, 'Local/1000@from-internal-0011;2', 'uid-11');
+assert_same([], $earlyHangupDb, 'an early called-party hangup must invoke the same ownership-guarded cleanup');
+$remoteCleanupDb = [
+	'repeatcaller/alertcall/12/playback_channel' => 'Local/1000@from-internal-0012;2',
+	'repeatcaller/alertcall/12/playback_uniqueid' => 'uid-12',
+];
+$remoteCleanupDb = $simulatePlaybackHangupCleanup($remoteCleanupDb, 12, 'Local/1000@from-internal-0012;2', 'uid-12');
+assert_same([], $remoteCleanupDb, 'remote acceptance redirect termination must remove playback AstDB records');
+$repeatCleanupDb = $simulatePlaybackHangupCleanup($remoteCleanupDb, 12, 'Local/1000@from-internal-0012;2', 'uid-12');
+assert_same([], $repeatCleanupDb, 'repeated playback cleanup must be idempotent');
+$staleCleanupDb = [
+	'repeatcaller/alertcall/13/playback_channel' => 'Local/1000@from-internal-0013;2',
+	'repeatcaller/alertcall/13/playback_uniqueid' => 'uid-new',
+	'repeatcaller/alertcall/14/playback_channel' => 'Local/1001@from-internal-0014;2',
+	'repeatcaller/alertcall/14/playback_uniqueid' => 'uid-14',
+];
+$staleCleanupResult = $simulatePlaybackHangupCleanup($staleCleanupDb, 13, 'Local/1000@from-internal-0013;2', 'uid-old');
+assert_same($staleCleanupDb, $staleCleanupResult, 'a stale channel reference must not delete records owned by another channel uniqueid');
+
 preg_match('/exten => remote_accepted,1,Set\(REPEATCALLER_ALERT_COMPLETED=1\)([\s\S]*?)exten => 1,1,Goto\(s,remote_accepted\)/', $playbackBlock, $remoteAcceptedMatch);
 assert_true(!empty($remoteAcceptedMatch[1]), 'generated playback context should include a remote_accepted extension block for accepted-elsewhere redirects');
 $remoteAcceptedBlock = $remoteAcceptedMatch[1];
@@ -934,6 +985,7 @@ final class FakeCallSender {
 final class FakeAstman {
 	public array $requests = [];
 	public array $dbValues = [];
+	public array $channelUniqueids = [];
 
 	public function send_request(string $action, array $params) {
 		$this->requests[] = ['action' => $action, 'params' => $params];
@@ -943,6 +995,13 @@ final class FakeAstman {
 				return ['Response' => 'Success', 'Val' => (string)$this->dbValues[$key]];
 			}
 			return ['Response' => 'Error', 'Message' => 'Database entry not found'];
+		}
+		if ($action === 'Getvar' && (string)($params['Variable'] ?? '') === 'CHANNEL(uniqueid)') {
+			$channel = (string)($params['Channel'] ?? '');
+			if (array_key_exists($channel, $this->channelUniqueids)) {
+				return ['Response' => 'Success', 'Val' => (string)$this->channelUniqueids[$channel]];
+			}
+			return ['Response' => 'Error', 'Message' => 'No such channel'];
 		}
 
 		return ['Response' => 'Success', 'Message' => 'Success'];
@@ -2542,9 +2601,17 @@ assert_same(0, count_history($parallelAcceptDb, "incident_id = {$parallelAcceptI
 
 $astman = new FakeAstman();
 $astman->dbValues['repeatcaller/alertcall/1/launch_channel'] = 'Local/780@repeatcaller-alert-launch-0001;1';
+$astman->dbValues['repeatcaller/alertcall/1/launch_uniqueid'] = 'launch-0001';
 $astman->dbValues['repeatcaller/alertcall/1/playback_channel'] = 'Local/780@from-internal-0001;2';
+$astman->dbValues['repeatcaller/alertcall/1/playback_uniqueid'] = 'playback-0001';
 $astman->dbValues['repeatcaller/alertcall/2/launch_channel'] = 'Local/781@repeatcaller-alert-launch-0002;1';
+$astman->dbValues['repeatcaller/alertcall/2/launch_uniqueid'] = 'launch-0002';
 $astman->dbValues['repeatcaller/alertcall/2/playback_channel'] = 'Local/781@from-internal-0002;2';
+$astman->dbValues['repeatcaller/alertcall/2/playback_uniqueid'] = 'playback-0002';
+$astman->channelUniqueids['Local/780@repeatcaller-alert-launch-0001;1'] = 'launch-0001';
+$astman->channelUniqueids['Local/780@from-internal-0001;2'] = 'playback-0001';
+$astman->channelUniqueids['Local/781@repeatcaller-alert-launch-0002;1'] = 'launch-0002';
+$astman->channelUniqueids['Local/781@from-internal-0002;2'] = 'playback-0002';
 $signalModule = new \FreePBX\modules\Repeatcaller(new stdClass());
 $signalModule->signalIncidentAcceptedForLiveAlertCalls($parallelAcceptIncident, 1);
 $requestActions = array_map(static function (array $request): string {
@@ -2552,8 +2619,33 @@ $requestActions = array_map(static function (array $request): string {
 }, $astman->requests);
 assert_true(in_array('DBPut', $requestActions, true), 'acceptance signalling should mark the incident accepted in Asterisk DB for live legs');
 assert_true(in_array('DBGet', $requestActions, true), 'acceptance signalling should query tracked live alert-call channels by history id');
+assert_true(in_array('Getvar', $requestActions, true), 'acceptance signalling should validate stored channels against their live uniqueid');
 assert_true(in_array('Redirect', $requestActions, true), 'acceptance signalling should redirect already answered playback legs to the remote-accepted path');
 assert_true(in_array('Hangup', $requestActions, true), 'acceptance signalling should hang up remaining launch or ringing legs immediately');
+$targetedChannels = array_values(array_filter(array_map(static function (array $request): string {
+	return in_array($request['action'], ['Redirect', 'Hangup'], true) ? (string)($request['params']['Channel'] ?? '') : '';
+}, $astman->requests)));
+assert_true(!in_array('Local/780@from-internal-0001;2', $targetedChannels, true), 'acceptance signalling must not act on the excluded accepting attempt');
+assert_true(!in_array('Local/780@repeatcaller-alert-launch-0001;1', $targetedChannels, true), 'excluded attempts must retain their own launch-channel records and remain untouched');
+
+$astman->requests = [];
+$astman->channelUniqueids['Local/781@from-internal-0002;2'] = 'different-playback-owner';
+$astman->channelUniqueids['Local/781@repeatcaller-alert-launch-0002;1'] = 'different-launch-owner';
+$signalModule->signalIncidentAcceptedForLiveAlertCalls($parallelAcceptIncident, 1);
+$staleTargetedChannels = array_values(array_filter(array_map(static function (array $request): string {
+	return in_array($request['action'], ['Redirect', 'Hangup'], true) ? (string)($request['params']['Channel'] ?? '') : '';
+}, $astman->requests)));
+assert_same([], $staleTargetedChannels, 'a reused channel name with a different uniqueid must never be redirected or hung up from stale AstDB data');
+assert_same('playback-0002', $astman->dbValues['repeatcaller/alertcall/2/playback_uniqueid'], 'stale-reference rejection must leave AstDB ownership records untouched for their active owner');
+
+$astman->requests = [];
+$astman->channelUniqueids['Local/781@from-internal-0002;2'] = 'playback-0002';
+$astman->channelUniqueids['Local/781@repeatcaller-alert-launch-0002;1'] = 'launch-0002';
+$signalModule->signalIncidentAcceptedForLiveAlertCalls($parallelAcceptIncident, 1);
+$repeatRequestActions = array_map(static function (array $request): string {
+	return (string)$request['action'];
+}, $astman->requests);
+assert_true(in_array('Redirect', $repeatRequestActions, true) && in_array('Hangup', $repeatRequestActions, true), 'repeated acceptance signalling must remain safe after the original channel validation was restored');
 
 $lateCallbackClock = new TestClock('2026-07-13 13:49:30');
 [$lateCallbackDb, $lateCallbackProcessor] = create_alert_environment($lateCallbackClock, new FakeEmailSender(), new FakeCallSender());

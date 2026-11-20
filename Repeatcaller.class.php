@@ -154,6 +154,7 @@ exten => s,1,NoOp(Repeat Caller alert playback)
  same => n,Set(REPEATCALLER_ALERT_HISTORY_ID=${ARG3})
  same => n,Set(REPEATCALLER_INCIDENT_ID=${ARG4})
  same => n,Set(REPEATCALLER_ALERT_RECIPIENT=${ARG5})
+ same => n,Set(CHANNEL(hangup_handler_push)=repeatcaller-alert-playback-cleanup,s,1)
  same => n,Answer()
  same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)=${CHANNEL(name)})
  same => n,Set(DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)=${CHANNEL(uniqueid)})
@@ -169,6 +170,16 @@ exten => remote_accepted,1,Set(REPEATCALLER_ALERT_COMPLETED=1)
 exten => 1,1,Goto(s,remote_accepted)
 exten => 2,1,Goto(s,remote_accepted)
 exten => i,1,Goto(s,remote_accepted)
+
+[repeatcaller-alert-playback-cleanup]
+exten => s,1,GotoIf($["${REPEATCALLER_ALERT_HISTORY_ID}"=""]?done)
+ same => n,GotoIf($["${DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)}"="${CHANNEL(name)}"]?uniqueid)
+ same => n,Goto(done)
+ same => n(uniqueid),GotoIf($["${DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)}"="${CHANNEL(uniqueid)}"]?delete)
+ same => n,Goto(done)
+ same => n(delete),Set(REPEATCALLER_PLAYBACK_DB_DELETE=${DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)})
+ same => n,Set(REPEATCALLER_PLAYBACK_UID_DB_DELETE=${DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)})
+ same => n(done),Return()
 
 CONF;
 		$context = '';
@@ -195,11 +206,88 @@ CONF;
 
 	public static function removeLegacyAlertCallDialplan(string $astetc): void {
 		$plan = self::inspectLegacyAlertCallDialplan($astetc);
-		if ($plan['content'] !== null && $plan['updated'] !== $plan['content'] && file_put_contents($plan['custom_path'], $plan['updated']) === false) {
-			throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan include.');
+		if ($plan['custom_path'] === '') {
+			return;
 		}
-		if ($plan['fragment_path'] !== '' && file_exists($plan['fragment_path']) && !unlink($plan['fragment_path'])) {
-			throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan fragment.');
+
+		$fragmentExists = $plan['fragment_path'] !== '' && file_exists($plan['fragment_path']);
+		if ($plan['content'] === null) {
+			if (file_exists($plan['custom_path'])) {
+				throw new \RuntimeException('extensions_custom.conf appeared during legacy Repeat Caller cleanup; retry the operation.');
+			}
+			if ($fragmentExists && !@unlink($plan['fragment_path'])) {
+				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan fragment. Retry cleanup after resolving filesystem access.');
+			}
+			return;
+		}
+
+		if ($plan['updated'] === $plan['content'] && !$fragmentExists) {
+			return;
+		}
+
+		$customHandle = @fopen($plan['custom_path'], 'rb');
+		if ($customHandle === false || !@flock($customHandle, LOCK_SH)) {
+			if (is_resource($customHandle)) {
+				fclose($customHandle);
+			}
+			throw new \RuntimeException('Unable to lock extensions_custom.conf for read-only legacy Repeat Caller cleanup inspection.');
+		}
+
+		try {
+			$content = self::readLegacyDialplanHandle($customHandle);
+			$plan = self::buildLegacyAlertCallDialplanPlan($astetc, $content);
+			if ($plan['updated'] !== $plan['content']) {
+				@flock($customHandle, LOCK_UN);
+				fclose($customHandle);
+				$customHandle = @fopen($plan['custom_path'], 'r+b');
+				if ($customHandle === false || !@flock($customHandle, LOCK_EX)) {
+					if (is_resource($customHandle)) {
+						fclose($customHandle);
+					}
+					throw new \RuntimeException('Unable to lock extensions_custom.conf for legacy Repeat Caller cleanup.');
+				}
+				$content = self::readLegacyDialplanHandle($customHandle);
+				$plan = self::buildLegacyAlertCallDialplanPlan($astetc, $content);
+			}
+			if ($plan['updated'] !== $plan['content']) {
+				self::replaceLegacyDialplanFileAtomically($customHandle, $plan['custom_path'], $plan['content'], $plan['updated']);
+				@flock($customHandle, LOCK_UN);
+				fclose($customHandle);
+				$customHandle = @fopen($plan['custom_path'], 'r+b');
+				if ($customHandle === false || !@flock($customHandle, LOCK_EX)) {
+					if (is_resource($customHandle)) {
+						fclose($customHandle);
+					}
+					throw new \RuntimeException('Legacy Repeat Caller include was removed, but the replacement dialplan file could not be re-locked; retry cleanup.');
+				}
+				$verifiedContent = self::readLegacyDialplanHandle($customHandle);
+				if ($verifiedContent !== $plan['updated']) {
+					throw new \RuntimeException('extensions_custom.conf changed during legacy Repeat Caller cleanup; retry the operation.');
+				}
+				$plan = self::buildLegacyAlertCallDialplanPlan($astetc, $verifiedContent);
+			}
+
+			$lockedStat = fstat($customHandle);
+			clearstatcache(true, $plan['custom_path']);
+			$currentStat = stat($plan['custom_path']);
+			$currentContent = @file_get_contents($plan['custom_path']);
+			if (!is_array($lockedStat)
+				|| !is_array($currentStat)
+				|| is_link($plan['custom_path'])
+				|| $currentStat['dev'] !== $lockedStat['dev']
+				|| $currentStat['ino'] !== $lockedStat['ino']
+				|| $currentContent !== $plan['content']) {
+				throw new \RuntimeException('extensions_custom.conf changed during legacy Repeat Caller cleanup; retry the operation.');
+			}
+			self::buildLegacyAlertCallDialplanPlan($astetc, $currentContent);
+			if ($plan['fragment_path'] !== '' && file_exists($plan['fragment_path']) && !@unlink($plan['fragment_path'])) {
+				throw new \RuntimeException('Unable to remove legacy Repeat Caller dialplan fragment. Retry cleanup after resolving filesystem access.');
+			}
+		} finally {
+			if (is_resource($customHandle)) {
+				@flock($customHandle, LOCK_UN);
+				fclose($customHandle);
+			}
 		}
 	}
 
@@ -218,6 +306,9 @@ CONF;
 		if (!file_exists($customPath)) {
 			return ['fragment_path' => $fragmentPath, 'custom_path' => $customPath, 'content' => null, 'updated' => null];
 		}
+		if (is_link($customPath) || !is_file($customPath)) {
+			throw new \RuntimeException('extensions_custom.conf must be a regular non-symlink file for legacy Repeat Caller cleanup.');
+		}
 		$content = file_get_contents($customPath);
 		if ($content === false) {
 			throw new \RuntimeException('Unable to read legacy Repeat Caller dialplan include. Check extensions_custom.conf permissions and retry the upgrade.');
@@ -234,6 +325,128 @@ CONF;
 			throw new \RuntimeException('An unmanaged reference to repeatcaller_alert.conf remains in extensions_custom.conf. Remove or update that administrator include, then retry the Repeat Caller upgrade; extensions_custom.conf and repeatcaller_alert.conf were not changed.');
 		}
 		return ['fragment_path' => $fragmentPath, 'custom_path' => $customPath, 'content' => $content, 'updated' => $updated];
+	}
+
+	/** @return array{fragment_path:string,custom_path:string,content:?string,updated:?string} */
+	private static function buildLegacyAlertCallDialplanPlan(string $astetc, ?string $content): array {
+		$astetc = rtrim($astetc, '/');
+		if ($astetc === '') {
+			return ['fragment_path' => '', 'custom_path' => '', 'content' => null, 'updated' => null];
+		}
+		$fragmentPath = $astetc . '/repeatcaller_alert.conf';
+		$customPath = $astetc . '/extensions_custom.conf';
+		if ($content === null) {
+			return ['fragment_path' => $fragmentPath, 'custom_path' => $customPath, 'content' => null, 'updated' => null];
+		}
+		$updated = preg_replace('/^; Repeat Caller managed include\r?\n#include repeatcaller_alert\.conf\r?\n; End Repeat Caller managed include(?:\r?\n|$)/m', '', $content);
+		if ($updated === null) {
+			throw new \RuntimeException('Unable to inspect the legacy Repeat Caller managed include in extensions_custom.conf.');
+		}
+		$activeInclude = preg_match('/^[ \t]*#(?:try)?include[ \t]+["<]?(?:[^\\s"<>;]*\/)?repeatcaller_alert\.conf[">]?[ \t]*(?:;[^\r\n]*)?\r?$/m', $updated);
+		if ($activeInclude === false) {
+			throw new \RuntimeException('Unable to inspect legacy Repeat Caller dialplan references in extensions_custom.conf.');
+		}
+		if ($activeInclude === 1) {
+			throw new \RuntimeException('An unmanaged reference to repeatcaller_alert.conf remains in extensions_custom.conf. Remove or update that administrator include, then retry the Repeat Caller upgrade; extensions_custom.conf and repeatcaller_alert.conf were not changed.');
+		}
+		return ['fragment_path' => $fragmentPath, 'custom_path' => $customPath, 'content' => $content, 'updated' => $updated];
+	}
+
+	private static function readLegacyDialplanHandle($handle): string {
+		rewind($handle);
+		$content = stream_get_contents($handle);
+		if ($content === false) {
+			throw new \RuntimeException('Unable to read extensions_custom.conf during legacy Repeat Caller cleanup.');
+		}
+		return $content;
+	}
+
+	private static function writeLegacyDialplanAll($handle, string $content): bool {
+		$length = strlen($content);
+		$offset = 0;
+		while ($offset < $length) {
+			$written = @fwrite($handle, substr($content, $offset));
+			if ($written === false || $written === 0) {
+				return false;
+			}
+			$offset += $written;
+		}
+		return $offset === $length;
+	}
+
+	private static function replaceLegacyDialplanFileAtomically($customHandle, string $customPath, ?string $expected, ?string $updated): void {
+		if ($expected === null || $updated === null) {
+			return;
+		}
+		$originalStat = fstat($customHandle);
+		if (!is_array($originalStat)) {
+			throw new \RuntimeException('Unable to inspect extensions_custom.conf before legacy Repeat Caller cleanup.');
+		}
+		$directory = realpath(dirname($customPath));
+		$tempPath = @tempnam(dirname($customPath), '.repeatcaller-dialplan-');
+		if ($tempPath === false) {
+			throw new \RuntimeException('Unable to create a temporary file for legacy Repeat Caller dialplan cleanup.');
+		}
+		if ($directory === false || realpath(dirname($tempPath)) !== $directory) {
+			@unlink($tempPath);
+			throw new \RuntimeException('Temporary legacy Repeat Caller dialplan file was not created in the Asterisk configuration directory.');
+		}
+		$tempHandle = null;
+		try {
+			$tempHandle = @fopen($tempPath, 'w+b');
+			if ($tempHandle === false || !self::writeLegacyDialplanAll($tempHandle, $updated) || !@fflush($tempHandle)) {
+				throw new \RuntimeException('Unable to write the complete temporary legacy Repeat Caller dialplan file.');
+			}
+			rewind($tempHandle);
+			if (stream_get_contents($tempHandle) !== $updated) {
+				throw new \RuntimeException('Temporary legacy Repeat Caller dialplan content did not verify.');
+			}
+			if (!fclose($tempHandle)) {
+				$tempHandle = null;
+				throw new \RuntimeException('Unable to close the temporary legacy Repeat Caller dialplan file.');
+			}
+			$tempHandle = null;
+
+			$tempStat = stat($tempPath);
+			if (!is_array($tempStat)) {
+				throw new \RuntimeException('Unable to inspect the temporary legacy Repeat Caller dialplan file.');
+			}
+			if ($tempStat['uid'] !== $originalStat['uid'] && !@chown($tempPath, $originalStat['uid'])) {
+				throw new \RuntimeException('Unable to preserve extensions_custom.conf ownership.');
+			}
+			if ($tempStat['gid'] !== $originalStat['gid'] && !@chgrp($tempPath, $originalStat['gid'])) {
+				throw new \RuntimeException('Unable to preserve extensions_custom.conf group ownership.');
+			}
+			if (!@chmod($tempPath, $originalStat['mode'] & 07777)) {
+				throw new \RuntimeException('Unable to preserve extensions_custom.conf permissions.');
+			}
+
+			clearstatcache(true, $customPath);
+			$currentStat = stat($customPath);
+			$currentContent = @file_get_contents($customPath);
+			if (!is_array($currentStat)
+				|| $currentStat['dev'] !== $originalStat['dev']
+				|| $currentStat['ino'] !== $originalStat['ino']
+				|| $currentStat['size'] !== $originalStat['size']
+				|| $currentStat['mtime'] !== $originalStat['mtime']
+				|| $currentStat['ctime'] !== $originalStat['ctime']
+				|| $currentStat['uid'] !== $originalStat['uid']
+				|| $currentStat['gid'] !== $originalStat['gid']
+				|| $currentStat['mode'] !== $originalStat['mode']
+				|| $currentContent !== $expected) {
+				throw new \RuntimeException('extensions_custom.conf changed during legacy Repeat Caller cleanup; original content was preserved.');
+			}
+			if (!@rename($tempPath, $customPath)) {
+				throw new \RuntimeException('Unable to atomically replace extensions_custom.conf for legacy Repeat Caller cleanup.');
+			}
+		} finally {
+			if (is_resource($tempHandle)) {
+				fclose($tempHandle);
+			}
+			if (file_exists($tempPath)) {
+				@unlink($tempPath);
+			}
+		}
 	}
 
 	public function backup(): array {
@@ -1679,9 +1892,11 @@ CONF;
 					}
 
 					$launchChannel = $this->astDbGetValue($astman, 'repeatcaller', 'alertcall/' . $historyId . '/launch_channel');
+					$launchUniqueid = $this->astDbGetValue($astman, 'repeatcaller', 'alertcall/' . $historyId . '/launch_uniqueid');
 					$playbackChannel = $this->astDbGetValue($astman, 'repeatcaller', 'alertcall/' . $historyId . '/playback_channel');
+					$playbackUniqueid = $this->astDbGetValue($astman, 'repeatcaller', 'alertcall/' . $historyId . '/playback_uniqueid');
 
-					if ($playbackChannel !== '') {
+					if ($this->astChannelMatchesUniqueid($astman, $playbackChannel, $playbackUniqueid)) {
 						$redirected = $this->astmanAction($astman, 'Redirect', [
 							'Channel' => $playbackChannel,
 							'Context' => 'repeatcaller-alert-playback',
@@ -1693,7 +1908,7 @@ CONF;
 						}
 					}
 
-					if ($launchChannel !== '') {
+					if ($this->astChannelMatchesUniqueid($astman, $launchChannel, $launchUniqueid)) {
 						$this->astmanAction($astman, 'Hangup', ['Channel' => $launchChannel]);
 					}
 				}
@@ -1720,6 +1935,30 @@ CONF;
 			if (is_string($result)) {
 				$normalized = strtolower(trim($result));
 				return strpos($normalized, 'success') !== false;
+			}
+		} catch (\Throwable $e) {
+		}
+
+		return false;
+	}
+
+	private function astChannelMatchesUniqueid($astman, string $channel, string $expectedUniqueid): bool {
+		if ($channel === '' || $expectedUniqueid === '' || !method_exists($astman, 'send_request')) {
+			return false;
+		}
+
+		try {
+			$result = $astman->send_request('Getvar', [
+				'Channel' => $channel,
+				'Variable' => 'CHANNEL(uniqueid)',
+			]);
+			if (!is_array($result)) {
+				return false;
+			}
+			foreach (['Val', 'val', 'Value', 'value', 'Data', 'data'] as $field) {
+				if (isset($result[$field])) {
+					return hash_equals($expectedUniqueid, trim((string)$result[$field]));
+				}
 			}
 		} catch (\Throwable $e) {
 		}
