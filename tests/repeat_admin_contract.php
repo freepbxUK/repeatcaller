@@ -275,6 +275,38 @@ function make_db(): PDO {
 	return $db;
 }
 
+$manualDb = make_db();
+FreePBX::setDatabase($manualDb);
+$manualDb->sqliteCreateFunction('GET_LOCK', static function ($name, $timeout): int { return 1; });
+$manualDb->sqliteCreateFunction('RELEASE_LOCK', static function ($name): int { return 1; });
+$manualDb->sqliteCreateFunction('NOW', static function (): string { return date('Y-m-d H:i:s'); });
+$manualController = new \FreePBX\modules\Repeatcaller(new stdClass());
+$manualMethod = new ReflectionMethod($manualController, 'rcHandleRunMonitor');
+$manualMethod->setAccessible(true);
+$manualDisabled = $manualMethod->invoke($manualController);
+assert_same(false, $manualDisabled['ran'], 'Run Now must not claim execution while monitoring is disabled');
+assert_true(strpos($manualDisabled['message'], 'disabled') !== false, 'Run Now must explain why a disabled monitor did not run');
+$manualDb->exec('CREATE TABLE cdr (calldate TEXT, linkedid TEXT, uniqueid TEXT, src TEXT, clid TEXT, did TEXT, dst TEXT, dcontext TEXT)');
+$manualDb->exec('CREATE TABLE repeatcaller_seen_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, call_identity TEXT UNIQUE, identity_type TEXT, fingerprint TEXT, linkedid TEXT, uniqueid TEXT, caller_raw TEXT, caller_normalized TEXT, inbound_route_key TEXT, did_value TEXT, call_started_at TEXT, call_completed_at TEXT, disposition TEXT, source_context TEXT, processed_at TEXT)');
+$manualDb->exec('CREATE TABLE repeatcaller_incident_alert_state (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER UNIQUE, rule_id INTEGER, alert_reminder_mode TEXT, initial_sent_at TEXT, last_alert_at TEXT, reminders_sent INTEGER, next_due_at TEXT, created_at TEXT, updated_at TEXT)');
+$manualDb->prepare('INSERT INTO repeatcaller_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)')->execute(['enabled', '1', date('Y-m-d H:i:s')]);
+$manualDb->exec("INSERT INTO incoming VALUES ('18005550001', '', 'Anonymous test route')");
+$manualDb->exec("INSERT INTO repeatcaller_rules (name, enabled, mode, threshold_count, observation_window_minutes, caller_mode, did_scope_mode, alert_reminder_mode_override, suppression_minutes_override) VALUES ('Run Now anonymous', 1, 'repeat', 2, 5, 'any', 'all', 'never', 0)");
+$manualDb->exec("INSERT INTO repeatcaller_rule_schedules (rule_id, day_of_week, start_time, end_time) VALUES (1, -1, '00:00:00', '24:00:00')");
+foreach ([['anonymous', '"Anonymous" <anonymous>'], ['', 'restricted']] as $manualIndex => [$manualSource, $manualClid]) {
+	$manualDb->prepare('INSERT INTO cdr VALUES (?, ?, ?, ?, ?, ?, ?, ?)')->execute([date('Y-m-d H:i:s', time() - 120 + 60 * $manualIndex), 'manual-' . $manualIndex, 'manual-' . $manualIndex, $manualSource, $manualClid, '18005550001', '18005550001', 'from-trunk']);
+}
+$manualResult = $manualMethod->invoke($manualController);
+assert_same(true, $manualResult['status'], 'Run Now must successfully execute the normal monitor pipeline');
+assert_same(true, $manualResult['ran'], 'Run Now must report actual execution');
+assert_same(2, $manualResult['runtimeSummary']['new_journeys'], 'Run Now must include both anonymous CDR journeys');
+assert_same(1, $manualResult['runtimeSummary']['incidents_created'], 'Run Now must create the qualifying anonymous incident');
+assert_same(1, $manualResult['alertSummary']['initial_events'], 'Run Now must generate the normal initial notification event');
+assert_true(strpos($manualResult['message'], '2 inbound journeys') !== false && strpos($manualResult['message'], '1 incidents created') !== false, 'Run Now feedback must expose useful execution counts');
+$manualAgain = $manualMethod->invoke($manualController);
+assert_same(0, $manualAgain['runtimeSummary']['new_journeys'], 'Run Now must preserve deduplication rather than replay old calls');
+assert_same(0, $manualAgain['alertSummary']['initial_events'], 'Run Now must not duplicate the original initial notification');
+
 $db = make_db();
 $dbForController = $db;
 FreePBX::setDatabase($dbForController);

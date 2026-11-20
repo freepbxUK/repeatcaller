@@ -5,13 +5,21 @@ declare(strict_types=1);
 namespace FreePBX\modules\Repeatcaller;
 
 final class DetectionEngine {
+	private static function callerNumberValue($value): string {
+		$value = trim((string)$value);
+		if (preg_match('/<([^<>]*)>\s*$/', $value, $match)) {
+			$value = $match[1];
+		}
+		return trim($value, " \t\n\r\0\x0B\"'");
+	}
+
 	public static function isWithheldCaller($value): bool {
-		$value = strtolower(trim((string)$value));
-		return in_array($value, ['', 'anonymous', 'withheld', 'unavailable', 'private', 'unknown'], true);
+		$value = strtolower(self::callerNumberValue($value));
+		return in_array($value, ['', 'anonymous', 'withheld', 'restricted', 'unavailable', 'private', 'unknown'], true);
 	}
 
 	public static function normaliseCaller($value, ?string $defaultCountryCode): ?string {
-		$value = trim((string)$value);
+		$value = self::callerNumberValue($value);
 		if (self::isWithheldCaller($value)) {
 			return null;
 		}
@@ -155,10 +163,10 @@ final class DetectionEngine {
 		$withheld = self::isWithheldCaller($journey['caller_raw']) && self::isWithheldCaller($journey['caller_clid']);
 		$normalizedCaller = $withheld
 			? null
-			: self::normaliseCaller($journey['caller_raw'] !== '' ? $journey['caller_raw'] : $journey['caller_clid'], $defaultCountryCode);
+			: self::normaliseCaller(!self::isWithheldCaller($journey['caller_raw']) ? $journey['caller_raw'] : $journey['caller_clid'], $defaultCountryCode);
 
 		if ($withheld) {
-			if (($rule['caller_mode'] ?? 'any') !== 'withheld_only') {
+			if (!in_array(($rule['caller_mode'] ?? 'any'), ['any', 'withheld_only'], true)) {
 				return null;
 			}
 			if (!empty($rule['exclude_withheld'])) {

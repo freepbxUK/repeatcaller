@@ -2,7 +2,7 @@
 <module>
   <rawname>repeatcaller</rawname>
   <name>Repeat Caller</name>
-  <version>1.1.0</version>
+  <version>1.2.0</version>
   <publisher>FreePBX UK</publisher>
   <license>GPLv3+</license>
   <licenselink>https://www.gnu.org/licenses/gpl-3.0.txt</licenselink>
@@ -11,9 +11,10 @@
   <more-info>https://github.com/freepbxUK/repeatcaller</more-info>
 
   <changelog>
-    *1.1.0* First signed FreePBX UK release. Adds per-rule Test Email, improves DID route selection and email sender handling, and introduces 25-record pagination with persistent sorting for incident and alert history tables.
-    *1.0.2* Improves multilingual Alert Call handling, adds native French support with English fallback, and introduces language status and sample playback.
-    *1.0.1* Improves Alert Reminder sequencing, rule editing, DID controls, suppression, snooze, and global controls.
+    *1.2.0* Fixes anonymous and withheld caller detection, Run Now feedback, and notifications continuing after incident acceptance. Moves Alert Call dialplan generation to FreePBX BMO and improves legacy dialplan cleanup during upgrades.
+    *1.1.0* First signed FreePBX UK release. Adds Test Email, server-side pagination and sorting for incident and alert history, and fixes DID selection and email sender handling.
+    *1.0.2* Adds native French Alert Calls, English fallback for unsupported languages, language availability indicators, and audio previews.
+    *1.0.1* Fixes Alert Reminder sequencing, caller and DID rule editing, incident suppression, and Alert Call escalation. Expands snooze and monitoring controls.
   </changelog>
 
   <menuitems>

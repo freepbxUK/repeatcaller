@@ -79,6 +79,10 @@ final class IncidentAlertProcessor {
 
 			$subject = $this->buildEmailSubject($emailAlert);
 			$message = $this->buildEmailMessage($emailAlert, $now);
+			if (!$this->repository->isIncidentActive((int)$emailAlert['incident_id'])) {
+				$this->repository->cancelPendingEmailAlertsForIncident((int)$emailAlert['incident_id'], $now);
+				continue;
+			}
 			$result = call_user_func($this->emailSender, (string)$emailAlert['recipient'], $subject, $message);
 
 			if (!empty($result['status'])) {
@@ -164,32 +168,16 @@ final class IncidentAlertProcessor {
 		$incidentId = (int)$incident['id'];
 		$ruleId = (int)$incident['rule_id'];
 		$incidentState = strtolower(trim((string)($incident['state'] ?? 'active')));
+		if ($incidentState !== 'active') {
+			return;
+		}
 		$recipients = $this->normaliseRecipients((string)($incident['email_recipients'] ?? ''));
 		$repeatMode = $this->resolveAlertReminderMode(
 			isset($incident['alert_reminder_mode_override']) ? (string)$incident['alert_reminder_mode_override'] : null
 		);
 		$firstDueAt = (string)$incident['first_matched_at'];
-		$lastMatchedAt = trim((string)($incident['last_matched_at'] ?? ''));
 		$state = $this->repository->ensureIncidentAlertState($incidentId, $ruleId, $repeatMode, $firstDueAt, $now);
 		$initialSentAt = isset($state['initial_sent_at']) ? (string)$state['initial_sent_at'] : '';
-		$lastAlertAt = isset($state['last_alert_at']) ? trim((string)$state['last_alert_at']) : '';
-
-		if ($incidentState === 'accepted') {
-			if ($lastMatchedAt === '' || $lastAlertAt === '' || !$this->isAfter($lastMatchedAt, $lastAlertAt)) {
-				return;
-			}
-
-			$remindersSent = max(0, (int)($state['reminders_sent'] ?? 0));
-			$reminderN = $remindersSent + 1;
-			$reminderEventType = 'reminder_' . $reminderN;
-			if (!$this->reserveStageEvents($incident, $repeatMode, $reminderEventType, 0, $recipients, $summary, $now)) {
-				return;
-			}
-			$nextDue = $this->nextAlertReminderDueAt($now, $repeatMode, $reminderN);
-			$this->repository->markReminderAlertSent($incidentId, $remindersSent, $reminderN, $now, $nextDue, $now);
-			$summary['reminder_events']++;
-			return;
-		}
 
 		if ($initialSentAt === '') {
 			$dueAt = (string)($state['next_due_at'] ?? $firstDueAt);
@@ -229,15 +217,6 @@ final class IncidentAlertProcessor {
 		$nextDue = $this->nextAlertReminderDueAt($now, $repeatMode, $reminderN);
 		$this->repository->markReminderAlertSent($incidentId, $remindersSent, $reminderN, $now, $nextDue, $now);
 		$summary['reminder_events']++;
-	}
-
-	private function isAfter(string $left, string $right): bool {
-		$leftTs = strtotime($left);
-		$rightTs = strtotime($right);
-		if ($leftTs === false || $rightTs === false) {
-			return false;
-		}
-		return $leftTs > $rightTs;
 	}
 
 	private function reserveStageEvents(array $incident, string $repeatMode, string $eventType, int $stageN, array $recipients, array &$summary, string $now): bool {

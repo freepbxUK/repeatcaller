@@ -1,4 +1,6 @@
 .agents/
 .codex/
 .vscode/
+__pycache__/
+*.py[cod]
 repeatcaller-*-forensic*.diff

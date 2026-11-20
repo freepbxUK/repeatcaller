@@ -180,7 +180,8 @@ $withheldAnyResult = DetectionEngine::evaluateRepeat([
 	build_cdr(['linkedid' => 'W-A', 'calldate' => '2026-07-13 09:00:00', 'src' => '', 'clid' => 'Anonymous']),
 	build_cdr(['linkedid' => 'W-B', 'calldate' => '2026-07-13 09:10:00', 'src' => '', 'clid' => 'Private']),
 ], build_rule(), '44');
-assert_same(0, count($withheldAnyResult['incidents']), 'withheld calls should not count unless explicitly selected');
+assert_same(1, count($withheldAnyResult['incidents']), 'Any caller must include withheld calls unless they are explicitly excluded');
+assert_same('withheld', $withheldAnyResult['incidents'][0]['subject_key'], 'unidentifiable callers must share the documented withheld subject rather than acquire invented individual identities');
 
 $withheldOnlyResult = DetectionEngine::evaluateRepeat([
 	build_cdr(['linkedid' => 'WW-A', 'calldate' => '2026-07-13 09:00:00', 'src' => '', 'clid' => 'Anonymous']),
@@ -188,6 +189,26 @@ $withheldOnlyResult = DetectionEngine::evaluateRepeat([
 ], build_rule(['caller_mode' => 'withheld_only']), '44');
 assert_same(1, count($withheldOnlyResult['incidents']), 'withheld calls should count when explicitly selected');
 assert_true((bool)$withheldOnlyResult['incidents'][0]['withheld'], 'withheld incidents should be marked as such');
+
+foreach ([null, '', 'anonymous', 'Anonymous', 'withheld', 'restricted', 'unavailable', 'private', 'unknown', '"Anonymous" <anonymous>', '"Private" <restricted>', '"Unavailable" <>', '<unknown>'] as $anonymousIdentity) {
+	assert_true(DetectionEngine::isWithheldCaller($anonymousIdentity), 'standard missing or withheld CDR Caller ID must be recognised: ' . (string)$anonymousIdentity);
+	foreach (['any', 'withheld_only'] as $callerMode) {
+		$anonymousRows = [
+			build_cdr(['linkedid' => 'anonymous-one', 'src' => '', 'clid' => $anonymousIdentity]),
+			build_cdr(['linkedid' => 'anonymous-two', 'calldate' => '2026-07-13 09:02:00', 'src' => 'anonymous', 'clid' => $anonymousIdentity]),
+		];
+		$anonymousRule = build_rule(['caller_mode' => $callerMode, 'observation_window_minutes' => 5]);
+		assert_same(1, count(DetectionEngine::evaluateRepeat($anonymousRows, $anonymousRule, '44')['incidents']), 'two anonymous journeys must meet the configured threshold in ' . $callerMode);
+		assert_same(0, count(DetectionEngine::evaluateRepeat($anonymousRows, build_rule(['caller_mode' => 'specific_only', 'include_callers' => ['+441234567890']]), '44')['incidents']), 'unknown callers cannot match a specific telephone-number list');
+		assert_same(0, count(DetectionEngine::evaluateRepeat($anonymousRows, build_rule(['caller_mode' => $callerMode, 'exclude_withheld' => 1]), '44')['incidents']), 'explicit withheld exclusion must still be respected');
+		assert_same(0, count(DetectionEngine::evaluateRepeat($anonymousRows, build_rule(['caller_mode' => $callerMode, 'did_scope_mode' => 'selected', 'include_routes' => ['different-did|']]), '44')['incidents']), 'withheld callers must still obey DID filtering');
+		assert_same(0, count(DetectionEngine::evaluateRepeat($anonymousRows, build_rule(['caller_mode' => $callerMode, 'schedules' => [['day' => 1, 'start' => '10:00', 'end' => '11:00']]]), '44')['incidents']), 'withheld callers must still obey schedules');
+	}
+}
+assert_true(!DetectionEngine::isWithheldCaller('"Anonymous" <+441234567890>'), 'a visible Caller ID number must not become withheld solely because of its display name');
+assert_same('+441234567890', DetectionEngine::normaliseCaller('"Desk 2001" <01234567890>', '44'), 'display-name digits must not become part of a caller number');
+$visibleFallback = DetectionEngine::filterJourneys([build_cdr(['linkedid' => 'visible-fallback', 'src' => 'anonymous', 'clid' => '"Desk" <01234567890>'])], build_rule(), '44');
+assert_same('+441234567890', $visibleFallback[0]['normalized_caller'], 'a valid CDR number must be used instead of an anonymous source marker');
 
 $repeatTriggerResult = DetectionEngine::evaluateRepeat([
 	build_cdr(['linkedid' => 'R-A', 'calldate' => '2026-07-13 09:00:00']),
