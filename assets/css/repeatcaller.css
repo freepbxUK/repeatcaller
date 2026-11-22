@@ -322,10 +322,21 @@
 	}
 }
 
-body:has(.repeatcaller) #page_body.default-page {
+body:has(.repeatcaller) #page_body {
 	display: block !important;
 	width: 100% !important;
 	max-width: 100% !important;
+	min-width: 0 !important;
+	box-sizing: border-box;
+}
+
+body:has(.repeatcaller) #page,
+body:has(.repeatcaller) #page_body,
+body:has(.repeatcaller) #page_body > .container-fluid,
+body:has(.repeatcaller) #page_body > .container-fluid > .display {
+	box-sizing: border-box;
+	max-width: 100%;
+	min-width: 0;
 }
 
 .repeatcaller .rc-row-gap {
@@ -715,6 +726,7 @@ body:has(.repeatcaller) #page_body.default-page {
 	display: block;
 	width: 100%;
 	max-width: 100%;
+	min-width: 0;
 	overflow-x: auto;
 	overflow-y: hidden;
 	-webkit-overflow-scrolling: touch;
@@ -903,6 +915,10 @@ body:has(.repeatcaller) #page_body.default-page {
 		min-height: 44px;
 		width: 100%;
 		font-size: 16px;
+	}
+
+	.repeatcaller .input-group .form-control {
+		width: 1%;
 	}
 
 	.repeatcaller input[type="checkbox"] {
