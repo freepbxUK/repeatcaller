@@ -4,6 +4,23 @@ Use this checklist for real FreePBX installation testing on FreePBX 16 and 17
 with MySQL/MariaDB. The 1.2.0 branch is development code, not a signed release;
 stage its checkout or package in the module directory and use `installlocal`.
 
+## Evidence Levels
+
+Repository contracts and packaging tests provide repeatable source-level
+checks. They validate intended logic, generated dialplan structure, filesystem
+failure handling and selected service interleavings. They do not prove that a
+particular FreePBX, Asterisk, database, endpoint, mail relay or carrier deployment
+behaves the same way.
+
+Record live PBX evidence independently for each supported platform. A result
+must include the actual FreePBX, framework/Core, PHP, Asterisk, driver and endpoint
+versions involved. Do not mark a live check passed from a simulated contract,
+unit fixture or source inspection alone.
+
+- Start with [Release Acceptance](#release-blocking-110-to-120-upgrade-acceptance).
+- Use [Automated Repository Checks](#automated-repository-checks) for local validation.
+- Continue with the BMO, AstDB, Caller ID and uninstall sections for live checks.
+
 ## Release-blocking 1.1.0-to-1.2.0 Upgrade Acceptance
 
 Status: **NOT VERIFIED; release-blocking.** No completed live upgrade evidence
@@ -81,6 +98,27 @@ Expected v1 fresh-install tables include:
 7. Confirm Inbound Route DID choices populate from FreePBX inbound routes.
 8. Confirm rule-level mode, alert actions, schedules, and recipients persist after save/reload.
 9. In the Rules table, confirm each row shows Edit, Status, and X controls on one line. Press Status and confirm the explainer bar turns light grey, shows rule status text for 15 seconds, then reverts.
+
+## Operator Page Presentation and Accessibility
+
+The repository has no separate public website or frontend build system; the
+module's operator page is `views/main.php` with scoped CSS and JavaScript.
+After fresh installation or upgrade, verify the following on FreePBX 16 and
+17:
+
+- The module header identifies the installed version without obscuring the
+  Engine Status controls.
+- Section navigation reaches Status, Incidents, Settings, Rules and History
+  anchors without changing the page state or triggering module actions.
+- Keyboard focus remains visible on navigation links, buttons and form controls.
+- At desktop, tablet and mobile widths, text and controls do not overlap and the
+  rule editor remains readable.
+- Wide incident and history tables scroll only inside their local wrappers.
+- Touch targets remain usable on mobile and long labels wrap without shifting
+  neighbouring controls.
+- Reduced-motion preferences suppress the snooze and navigation transitions.
+- Existing dynamic status, Run Now, rule editing, sorting, pagination and sample
+  playback behaviour continues to work after the presentation changes.
 
 ## Incident and History Pagination
 
@@ -247,12 +285,18 @@ configuration must remain unchanged. Run cleanup twice to check idempotence;
 never delete `extensions_custom.conf` itself. On both FreePBX 16 and 17, record
 `extensions_custom.conf` owner, group, mode, inode, and full content before and
 after a normal upgrade. Confirm an atomic replacement preserves the owner,
-group, mode, and all bytes outside the exact managed block. On a disposable
-system, make the containing directory non-writable and retry cleanup: the
-original custom file and legacy fragment must remain recoverable, with no temp
-file left behind. Then restore access and confirm a subsequent retry completes.
-Simulated filesystem tests do not establish production Asterisk filesystem,
-service-account, ACL, or SELinux/AppArmor behaviour.
+group, mode, and all bytes outside the exact managed block. On a disposable system, test a readable `0444` `extensions_custom.conf` as the
+FreePBX service account. With no managed block and no fragment, cleanup must
+succeed without replacing or changing the file. With a fragment but no managed
+block, cleanup must remove only the obsolete fragment while preserving the
+custom file byte-for-byte. With a managed block still present, cleanup must fail
+safely, retain both files, and succeed after write access is restored.
+
+Make the containing directory non-writable and retry cleanup: the original custom
+file and legacy fragment must remain recoverable, with no temporary file left
+behind. Restore access and confirm a subsequent retry completes. Simulated
+filesystem tests do not establish production FreePBX service-account, ACL, or
+SELinux/AppArmor behaviour.
 
 Live Alert Call AstDB cleanup is release-blocking verification on FreePBX 16 and
 17. Before each test, note the alert-history ID and inspect the four
@@ -268,7 +312,7 @@ must use only a disposable PBX: if a stored channel name resolves to a
 channel with a different uniqueid, remote acceptance must not redirect or hang
 up that channel. These checks must be observed on real FreePBX 16 and FreePBX 17
 installations; record the actual Asterisk version for each test. AMI and channel
-lifecycle behavior cannot be proven by contract simulations.
+lifecycle behaviour cannot be proven by contract simulations.
 
 The old summary helper contained references to an undefined
 `repeatcaller-alert-accept-check` subroutine. It was not called by current
@@ -489,7 +533,7 @@ Status: **NOT VERIFIED.** Complete this test independently on FreePBX 16 and
 FreePBX 17. Record the FreePBX/PBXact, framework/Core, PHP, and Asterisk
 versions, screenshots or sanitised logs, and each actual result. Do not mark an
 unperformed check as passed. This workspace has no live Module Admin instance;
-the exact GUI labels and Remove behavior require platform verification.
+the exact GUI labels and Remove behaviour require platform verification.
 
 | Acceptance check | FreePBX 16 | FreePBX 17 |
 | --- | --- | --- |

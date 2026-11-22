@@ -1,12 +1,54 @@
 # Repeat Caller 1.2.0 for FreePBX 16 and 17
 
-Repeat Caller turns qualifying inbound call activity into actionable incidents
-on FreePBX/PBXact. Repeat mode detects when the same caller reaches a configured
-threshold; Invert mode detects when fewer than the expected number of matching
-calls occur. Incidents can be reviewed in the GUI and can trigger optional
-email and Alert Call notifications.
+Repeat Caller is a FreePBX/PBXact monitoring module for call patterns that need
+attention. It turns matching inbound call journeys into incidents that can be
+reviewed in the GUI and, where configured, sent by email or delivered as an
+interactive Alert Call.
+
+Use **Repeat mode** when the same caller should trigger an incident after a
+configured number of calls. Use **Invert mode** when an expected number of
+calls does not arrive within a completed observation window.
+
+## Start Here
+
+- **Install or upgrade:** [Install or Upgrade from the Official 1.2.0 Package](#install-or-upgrade-from-the-official-120-package)
+- **Configure and operate:** [User Guide](USER_GUIDE.md)
+- **Understand detection and incidents:** [Detection and Incident Behaviour](#detection-and-incident-behaviour)
+- **Review call delivery:** [Alerting](#alerting)
+- **Troubleshoot installation or signing:** [Updating Repeat Caller](#updating-repeat-caller)
+- **Get help:** [Support and Feedback](#support-and-feedback)
+
+## How It Works
+
+1. The one-minute FreePBX job scans completed CDR call journeys.
+2. Enabled rules match journeys by caller, inbound route, schedule, threshold,
+   and observation window.
+3. A qualifying condition creates or updates an incident.
+4. The GUI always records the incident; Email and Alert Call delivery are
+   optional per rule.
+5. Acceptance, suppression, clearing, reminders, pruning, and audit history
+   remain visible in the operator interface.
+
+## Principal Features
+
+- Repeat and Invert detection with caller, DID and schedule scoping.
+- Anonymous and withheld caller handling within the CDR information available.
+- Active, recent and suppressed incident views with server-side sorting and
+  pagination.
+- GUI, Email and interactive Alert Call response paths.
+- Ring All and Ordered Alert Call strategies with Keep Trying and reminders.
+- Installed-language discovery, complete-message English fallback and audio
+  samples for Alert Calls.
+- Global monitoring, snooze, rule controls, retention policies and manual Run
+  Now checks.
+- BMO-generated Alert Call dialplan with migration-only legacy configuration
+  cleanup and ownership-aware live-call controls.
 
 ## Release Information
+
+The repository's current `1-2-0_Dev` branch is development code, not a signed
+or published release. The 1.2.0 archive described below is a future official
+signed release and is not currently available for download.
 
 Repeat Caller 1.2.0 follows version 1.1.0, the first signed FreePBX UK
 release. For a new installation or upgrade, use the official signed
@@ -18,8 +60,10 @@ Module Signing v2 master key. Use the signing guidance below to verify that
 trust chain for the release package you install.
 
 The official project repository is
-[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller). Verify the
-official 1.2.0 package using the procedure below.
+[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller). A repository
+or branch checkout is source code for review or test use; it is not a signed
+release package. Production installation must use a separately distributed and
+verified 1.2.0 package.
 
 ## Introduction
 
@@ -51,10 +95,15 @@ Use with FreePBX/PBXact 16 or 17.
 - PHP 7.4+
 - MariaDB 5.5-compatible schema (utf8/InnoDB key-size compatible)
 
+The module metadata targets FreePBX/PBXact 16 and 17, and repository contracts
+exercise supported interfaces and migration logic. Live installation, upgrade,
+endpoint and telephony acceptance remains a separate release-verification step.
+
 ### Upgrade compatibility
 
 Repeat Caller 1.0.0 is not a supported upgrade source for later releases.
-Upgrade compatibility includes the 1.1.0 release.
+The migration code supports upgrading from 1.1.0 to 1.2.0; that path must still be
+verified on a live FreePBX/PBXact 16 and 17 test system before release approval.
 
 ## Requirements
 
@@ -74,9 +123,10 @@ Upgrade compatibility includes the 1.1.0 release.
 
 ## Installing
 
-Repeat Caller is not listed in the FreePBX online module repository. Install
-or upgrade using the official signed `RepeatCaller-1.2.0.tgz` package through
-Module Admin.
+Repeat Caller is not listed in the FreePBX online module repository. Until the
+official signed `RepeatCaller-1.2.0.tgz` package is published, use the
+development branch only for review and testing. Once published, install or
+upgrade using that official signed package through Module Admin.
 
 ## Install or Upgrade from the Official 1.2.0 Package
 
@@ -180,6 +230,13 @@ Each installation hook performs a read-only legacy-include preflight before
 its schema operation. The legacy hook ensures the schema, deploys the AGI,
 removes the module-owned legacy dialplan, and registers the job. Apply Config
 or reload writes the BMO-generated contexts.
+
+Legacy configuration cleanup modifies only the exact Repeat Caller managed
+include block. Read-only administrator files are sufficient when no custom-file
+change is required. When modification is required, Repeat Caller validates the
+locked content and atomically replaces the file while preserving unrelated
+bytes, ownership and permissions. The legacy fragment is retained until that
+cleanup succeeds.
 
 The hooks are not one transaction. If the first preflight finds an unmanaged
 reference, it stops before the BMO schema changes. If configuration changes
@@ -613,6 +670,14 @@ methods:
 Alert attempts are reserved in alert history with dedupe keys so the same
 incident stage/action/recipient combination is not repeatedly scheduled.
 
+Alert Call dialplan is generated through FreePBX BMO. During an answered call,
+Repeat Caller records the active playback channel and uniqueid in Asterisk DB.
+The playback hangup handler removes only records owned by the terminating
+channel and uniqueid. Remote acceptance validates that stored channel identity
+against the live channel before redirecting or hanging it up, so a stale channel
+name cannot target an unrelated call. These lifecycle controls supplement the
+launch-context cleanup; repeated cleanup is safe.
+
 Email recipients are configured per rule, and email delivery is enabled or
 disabled per rule.
 
@@ -976,7 +1041,12 @@ Available durations are 5 minutes, 15 minutes, 30 minutes, 1 hour, 3 hours, 6 ho
 
 ## User Interface
 
-Reports > Repeat Caller includes these main sections:
+Open **Reports > Repeat Caller**. The page header identifies the installed
+module version, and the section navigation provides direct access to status,
+incidents, settings, rules and history. Existing controls and tables remain in
+place below it.
+
+The main sections are:
 
 - Engine Status: enabled rules, active incidents, last run, run state, PBX
   time, Enable All Rules/Disable All Rules, Snooze, Resume All Rules, Run Now.
@@ -1051,9 +1121,17 @@ horizontal scroll where needed.
 - Snooze is global rather than per rule/incident.
 - No webhook or SMS delivery channel is implemented.
 
+Automated repository tests verify source-level behaviour and failure handling.
+They do not replace live FreePBX, Asterisk, endpoint, mail relay or carrier
+verification. Outstanding live acceptance work must be completed independently
+before release approval.
+
 ## Release History
 
 ### 1.2.0, 20 November 2026
+
+Development status: this 1.2.0 release has not yet been signed or published.
+The entry describes the planned official signed package.
 
 Builds on published 1.1.0 with the following administrator-facing improvements:
 
@@ -1279,15 +1357,13 @@ If an unmanaged reference to the legacy fragment remains, cleanup aborts before
 editing either dialplan file or deleting the referenced fragment. Job and table
 cleanup failures are logged; AGI unlink failures are not reported by the hook.
 
-action is for deleting the remaining module files; deleting files alone does not
 After uninstall, confirm Repeat Caller is no longer installed in Module Admin,
 the monitor job and deployed AGI are absent, and no Repeat Caller tables remain.
 After Apply Config, check that generated Alert Call contexts are gone and that
-unrelated `extensions_custom.conf` content is unchanged. Module Admin's Remove
-action deletes the remaining module files only; deleting files alone does not
-run database or other uninstall cleanup. Check the job list and table names
-directly. AGI unlink failures are not reported by the hook, so check the path
-configured by `ASTAGIDIR` (or
+unrelated `extensions_custom.conf` content is unchanged. Module Admin's optional
+Remove action deletes the remaining module files only; deleting files alone does
+not run database or other uninstall cleanup. Check the job list and table names
+directly, then check the AGI path configured by `ASTAGIDIR` (or
 `/var/lib/asterisk/agi-bin` when unset).
 
 For example, inspect the installed modules and job list, check the deployed AGI
