@@ -697,7 +697,6 @@ body:has(.repeatcaller) #page_body > .container-fluid > .display {
 
 .repeatcaller,
 .repeatcaller .repeatcaller-container,
-.repeatcaller .row,
 .repeatcaller [class*="col-"],
 .repeatcaller .panel,
 .repeatcaller .panel-body {

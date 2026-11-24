@@ -52,7 +52,8 @@ $assetVer = max(
         <a class="rc-skip-link" href="#rc-engine"><?php echo _('Skip to monitoring controls'); ?></a>
         <div class="repeatcaller-container">
 	<div class="row">
-		<header class="col-sm-12 rc-page-header-inner rc-page-header">
+		<div class="col-sm-12 rc-page-header-inner">
+		<header class="rc-page-header">
 			<div class="rc-page-identity">
 				<div class="rc-page-copy">
 					<p class="rc-page-eyebrow"><?php echo _('FreePBX incident monitoring'); ?></p>
@@ -66,6 +67,7 @@ $assetVer = max(
 			</div>
 			<div id="rc-message" class="alert" role="status" aria-live="polite" style="display:none;"></div>
 		</header>
+		</div>
 	</div>
 
 	<nav class="rc-section-nav" aria-label="<?php echo htmlspecialchars(_('Repeat Caller sections'), ENT_QUOTES, 'UTF-8'); ?>">
