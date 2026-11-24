@@ -46,24 +46,17 @@ calls does not arrive within a completed observation window.
 
 ## Release Information
 
-The repository's current `1-2-0_Dev` branch is development code, not a signed
-or published release. The 1.2.0 archive described below is a future official
-signed release and is not currently available for download.
+The intended production release date for Repeat Caller 1.2.0 is **24 November
+2026**. This README describes that intended release. It does not verify that a
+release package has been signed, that FreePBX recognises a signature, or that
+the package has been published.
 
-Repeat Caller 1.2.0 follows version 1.1.0, the first signed FreePBX UK
-release. For a new installation or upgrade, use the official signed
-`RepeatCaller-1.2.0.tgz` package. Verify its checksum and FreePBX module
-signature before installation.
-
-FreePBX module signing uses a developer GPG key certified by the FreePBX
-Module Signing v2 master key. Use the signing guidance below to verify that
-trust chain for the release package you install.
-
-The official project repository is
-[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller). A repository
-or branch checkout is source code for review or test use; it is not a signed
-release package. Production installation must use a separately distributed and
-verified 1.2.0 package.
+For production installation or upgrade, use the signed 1.2.0 package supplied
+through the official release distribution when available. Follow that
+distribution's package and integrity-verification instructions. A repository
+checkout is source code for review or development testing, not a substitute for
+the signed release package. The project repository is
+[freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller).
 
 ## Introduction
 
@@ -102,8 +95,9 @@ endpoint and telephony acceptance remains a separate release-verification step.
 ### Upgrade compatibility
 
 Repeat Caller 1.0.0 is not a supported upgrade source for later releases.
-The migration code supports upgrading from 1.1.0 to 1.2.0; that path must still be
-verified on a live FreePBX/PBXact 16 and 17 test system before release approval.
+The migration code supports upgrading from 1.1.0 to 1.2.0. Back up the PBX and
+module data before upgrading, and verify the migration on a representative
+FreePBX/PBXact system before production rollout.
 
 ## Requirements
 
@@ -123,32 +117,27 @@ verified on a live FreePBX/PBXact 16 and 17 test system before release approval.
 
 ## Installing
 
-Repeat Caller is not listed in the FreePBX online module repository. Until the
-official signed `RepeatCaller-1.2.0.tgz` package is published, use the
-development branch only for review and testing. Once published, install or
-upgrade using that official signed package through Module Admin.
+Repeat Caller is not listed in the FreePBX online module repository. For a
+production installation, obtain the signed 1.2.0 release package from the
+official release distribution when available, then upload it through Module
+Admin using the distribution's integrity-verification instructions. Do not use
+a development checkout for a production installation.
 
 ## Install or Upgrade from the Official 1.2.0 Package
 
-Download `RepeatCaller-1.2.0.tgz` and its matching
-`RepeatCaller-1.2.0.tgz.sha256` file from the official release distribution.
-Verify archive integrity before upload:
+When the signed 1.2.0 package is available, obtain it from the official release
+distribution. If a checksum is published, verify it using the exact filename
+and command supplied with that release. A checksum checks archive integrity;
+it does not authenticate the publisher or replace FreePBX module-signature
+verification. FreePBX checks the module signature separately when the package
+is uploaded and its signing key is trusted.
 
-```sh
-sha256sum -c RepeatCaller-1.2.0.tgz.sha256
-```
-
-SHA-256 verifies that the archive bytes match the supplied checksum; it does
-not authenticate the publisher or replace FreePBX module-signature
-verification. FreePBX verifies a valid module signature separately when the
-signed package is uploaded and its signing key is trusted.
-
-In FreePBX/PBXact, open **Admin → Module Admin → Upload Modules**, select
-`RepeatCaller-1.2.0.tgz`, and upload it. Install it on a fresh system or choose
-Upgrade for an existing installation. Enable Repeat Caller if needed, then
-select Apply Config. Confirm Module Admin reports version `1.2.0` and the module
-page loads. Do not uninstall before upgrading; uninstall deletes rules,
-settings, incidents, and alert history.
+In FreePBX/PBXact, open **Admin → Module Admin → Upload Modules**, select the
+release package, and upload it. Install it on a fresh system or choose Upgrade
+for an existing installation. Enable Repeat Caller if needed, then select Apply
+Config. Confirm Module Admin reports version `1.2.0` and the module page loads.
+Do not uninstall before upgrading; uninstall deletes rules, settings, incidents,
+and alert history.
 
 ## Development Installation (Testing Only)
 
@@ -259,15 +248,13 @@ grep "<version>" /var/www/html/admin/modules/repeatcaller/module.xml
 
 ### Upgrade from 1.1.0 to 1.2.0
 
-Download `RepeatCaller-1.2.0.tgz` and its matching
-`RepeatCaller-1.2.0.tgz.sha256`; verify the archive as described under
-Installing. In FreePBX/PBXact, open **Admin → Module Admin → Upload Modules**,
-upload `RepeatCaller-1.2.0.tgz`, and select Upgrade for the existing 1.1.0
-installation. Do not uninstall first. Enable the module if necessary and select
-Apply Config. Confirm the installed version is `1.2.0` and verify existing
-rules, settings, incidents, and alert history remain present.
+Use the signed 1.2.0 release package and the Module Admin upload procedure
+above. Select Upgrade for the existing 1.1.0 installation; do not uninstall
+first. Enable the module if necessary and select Apply Config. Confirm the
+installed version is `1.2.0` and verify existing rules, settings, incidents,
+and alert history remain present.
 
-### Option 2: Update a development Git checkout for testing
+### Update a development Git checkout for testing
 
 After the first installation, `fwconsole chown` may cause Git to reject the
 module directory when it is owned by the FreePBX web user rather than root.
@@ -282,7 +269,7 @@ git config --global --get-all safe.directory | grep -Fxq '/var/www/html/admin/mo
 Check for local changes before updating and preserve any changes you need. Use
 `git checkout` rather than `git switch` for compatibility with older Git
 versions found on some FreePBX 16 systems. The following updates the development
-branch for testing; it is not an update to a published release:
+branch for testing; it is not the production-release update procedure:
 
 ```sh
 cd /var/www/html/admin/modules/repeatcaller
@@ -297,13 +284,13 @@ fwconsole chown
 fwconsole reload
 ```
 
-Do not use an online repository upgrade for this development version; it is not
-published there. `installlocal` runs install or upgrade hooks against the
+Do not use an online repository upgrade for a development checkout.
+`installlocal` runs install or upgrade hooks against the
 checked-out files, `enable` ensures the module is enabled, and `reload` applies
 generated dialplan. Run Git commands only when the installed module directory
 contains a `.git` directory.
 
-### Option 3: Update from a local copy
+### Update from a local copy
 
 Re-copy or re-link your local `repeatcaller` directory into
 `/var/www/html/admin/modules/repeatcaller/`, then run the fwconsole commands
@@ -342,10 +329,9 @@ before running FreePBX module commands. Preserve local changes; do not use a
 hard reset to force the checkout to a remote branch. After a successful source
 update, run `fwconsole ma installlocal repeatcaller`, enable the module if
 needed, reload, and verify both the module listing and installed `module.xml`.
-Do not proceed to signature troubleshooting until the expected published
-version and signed files are installed. This applies only to a published
-package that is independently expected to be signed; development checkouts are
-not release packages.
+For the signed production release, use the official package workflow above.
+Signature troubleshooting applies only when the package is independently
+confirmed as signed; development checkouts are not release packages.
 
 #### `git fetch origin` cannot find a remote branch
 
@@ -393,11 +379,12 @@ fwconsole ma list | grep -i repeatcaller
 grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 ```
 
-### Signature warnings for a published package
+### Signature troubleshooting for a confirmed signed package
 
-Use this procedure only for a published package whose signing status has been
+Use this procedure only when the installed package's signed status has been
 independently established. Verify each package's own signature and do not infer
-the signing status of one release from another.
+the signing status of one release from another. Before publication, confirm
+that these steps match the final package and FreePBX signing configuration.
 
 First confirm that the signed release files were actually installed. Check the
 FreePBX module listing, the installed `module.xml`, and the signature file:
@@ -434,80 +421,20 @@ from an untagged development checkout.
 
 #### Signed by unknown or untrusted key
 
-A package signed by the Repeat Caller developer key can be reported as signed
-by an unknown or untrusted key if the Asterisk GnuPG keyring lacks the
-certification needed to trust that key. The FreePBX Module Signing v2 master key
-certifies the developer's public key. That certification may be absent from
-the local Asterisk GnuPG keyring even when the developer public key itself is
-already present.
-
-The Repeat Caller developer key is the same key used for Registration Watch.
-Check its signatures in the Asterisk keyring:
-
-```sh
-sudo -u asterisk gpg \
-  --homedir /home/asterisk/.gnupg \
-  --check-sigs DD6DC4210FD028092D4981A56079D3C0D58322EE
-```
-
-If the FreePBX Module Signing v2 master-key certification is missing, preserve
-third-party signatures when importing the developer public key:
-
-```sh
-grep -qxF 'keyserver-options no-self-sigs-only,no-import-clean' /home/asterisk/.gnupg/gpg.conf \
-  || echo 'keyserver-options no-self-sigs-only,no-import-clean' >> /home/asterisk/.gnupg/gpg.conf
-```
-
-If `/home/asterisk/.gnupg/gpg.conf` does not already exist, `grep` may display:
-
-```text
-grep: /home/asterisk/.gnupg/gpg.conf: No such file or directory
-```
-
-This is harmless and expected on systems without an existing GnuPG
-configuration file. The subsequent `echo` command automatically creates the
-file with the required setting. No additional action is necessary.
-
-Continue with the import and check the signatures again:
-
-```sh
-chown asterisk:asterisk /home/asterisk/.gnupg/gpg.conf
-
-curl -s "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x6079D3C0D58322EE" \
-  | sudo -u asterisk gpg --homedir /home/asterisk/.gnupg --import
-
-sudo -u asterisk gpg \
-  --homedir /home/asterisk/.gnupg \
-  --check-sigs DD6DC4210FD028092D4981A56079D3C0D58322EE
-```
-
-The second signature check should show the FreePBX Module Signing v2 master-key
-certification, identified by `1588A7366BD35B34`. This procedure is advisory
-troubleshooting guidance for affected existing installations, not a normal
-installation step.
-
-After confirming the certification, refresh signatures and verify the result
-in Module Admin:
-
-```sh
-fwconsole ma refreshsignatures
-fwconsole chown
-fwconsole reload
-```
+If Module Admin reports an unknown or untrusted key, follow the current
+FreePBX module-signing guidance to verify the release signer and establish
+trust. Do not import keys or rely on a key identifier based only on this README.
+Recheck the status in Module Admin after resolving the trust issue.
 
 Troubleshooting order:
 
 1. Verify the installed module version and `module.xml`.
 2. If the version is old, resolve the incomplete source update.
-3. If `git fetch origin` fails because an obsolete remote branch is configured,
-   restore the normal fetch configuration, fetch branches again, and confirm
-   that the intended source branch exists. A repository branch is not, by
-   itself, evidence of a published release.
-4. Only for a published package independently known to be signed, investigate
-  an unsigned status and refresh FreePBX's module signatures.
-5. If the module is signed but reported as unknown or untrusted, check the
-   developer-key signatures and confirm the master-key certification.
-6. Refresh signatures and verify the final status in Module Admin.
+3. Only for a package independently confirmed as signed, investigate an
+  unsigned status and refresh FreePBX's module signatures.
+4. If the module is reported as signed by an unknown or untrusted key, follow
+  FreePBX module-signing guidance to establish trust.
+5. Refresh signatures and verify the final status in Module Admin.
 
 ## Background Processing
 
@@ -1122,18 +1049,28 @@ horizontal scroll where needed.
 - No webhook or SMS delivery channel is implemented.
 
 Automated repository tests verify source-level behaviour and failure handling.
-They do not replace live FreePBX, Asterisk, endpoint, mail relay or carrier
-verification. Outstanding live acceptance work must be completed independently
-before release approval.
+They do not establish how a particular FreePBX, Asterisk, endpoint, mail relay,
+or carrier environment will behave. Validate integrations in the target
+environment as part of deployment planning.
 
 ## Release History
 
-### 1.2.0, 20 November 2026
+### 1.2.0, 24 November 2026
 
-Development status: this 1.2.0 release has not yet been signed or published.
-The entry describes the planned official signed package.
+Intended production release dated 24 November 2026, building on 1.1.0. This
+entry records the intended release date and changes; it does not verify package
+signing, FreePBX signature recognition, or publication.
 
-Builds on published 1.1.0 with the following administrator-facing improvements:
+#### Administration interface and usability
+
+- Modernises the FreePBX/PBXact administration interface with improved
+  section navigation and operational presentation, while retaining familiar
+  native FreePBX styling.
+- Provides responsive layouts for desktop and narrower screens, aligning the
+  page title/header, navigation tabs, Engine Status panel, and subsequent
+  content panels to consistent boundaries.
+- Improves accessibility with a skip link, visible keyboard focus, labelled
+  navigation and controls, live status announcements, and reduced-motion support.
 
 #### Detection and reporting
 
@@ -1149,18 +1086,11 @@ Builds on published 1.1.0 with the following administrator-facing improvements:
   This applies regardless of suppression settings or expiry. Queued work is
   cancelled where possible and email eligibility is rechecked before handoff;
   already delivered or externally handed-off messages cannot be recalled.
-- Preserves accepted incident state and subject linkage through suppression
-  reconciliation, observed clearing and rearming.
+  The accepted incident's state and subject linkage remain intact through
+  suppression reconciliation, observed clearing, and rearming.
 - Moves Alert Call dialplan generation to FreePBX BMO. Upgrade preflight checks
   legacy references before schema changes; cleanup preserves administrator
   dialplan and refuses unmanaged references, with a repeatable retry path.
-- Establishes the originating `Repeat Caller` caller name before dialling,
-  restores the original name before external identity processing, and removes
-  the old connected-line handler without changing caller numbers or privacy
-  flags.
-- Keeps Alert Call acknowledgement, retry, and no-response handling in the
-  interactive call flow, and records telephone acceptance or decline before
-  playing closing prompts.
 
 ### 1.1.0, first signed FreePBX UK release, 20 October 2026
 
@@ -1254,9 +1184,6 @@ Builds on published 1.1.0 with the following administrator-facing improvements:
 
 #### Accepted incident suppression
 
-- Accepted incidents cannot reserve or deliver further notifications, whether
-  suppression is active, expired, or disabled.
-- Preserves normal Alert Reminders for active unaccepted incidents.
 - After observed clearing and rearming, a genuinely new qualifying episode can
   create a new incident if suppression is disabled or expired. Suppression
   expiry alone does not rearm an incident or resume accepted-incident reminders.
