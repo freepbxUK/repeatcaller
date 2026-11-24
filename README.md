@@ -11,11 +11,11 @@ calls does not arrive within a completed observation window.
 
 ## Start Here
 
-- **Install or upgrade:** [Install or Upgrade from the Official 1.2.0 Package](#install-or-upgrade-from-the-official-120-package)
+- **Install or upgrade:** [Installing or Upgrading](#installing-or-upgrading)
 - **Configure and operate:** [User Guide](USER_GUIDE.md)
 - **Understand detection and incidents:** [Detection and Incident Behaviour](#detection-and-incident-behaviour)
 - **Review call delivery:** [Alerting](#alerting)
-- **Troubleshoot installation or signing:** [Updating Repeat Caller](#updating-repeat-caller)
+- **Troubleshoot installation or updates:** [Updating Repeat Caller](#updating-repeat-caller)
 - **Get help:** [Support and Feedback](#support-and-feedback)
 
 ## How It Works
@@ -46,16 +46,10 @@ calls does not arrive within a completed observation window.
 
 ## Release Information
 
-The intended production release date for Repeat Caller 1.2.0 is **24 November
-2026**. This README describes that intended release. It does not verify that a
-release package has been signed, that FreePBX recognises a signature, or that
-the package has been published.
-
-For production installation or upgrade, use the signed 1.2.0 package supplied
-through the official release distribution when available. Follow that
-distribution's package and integrity-verification instructions. A repository
-checkout is source code for review or development testing, not a substitute for
-the signed release package. The project repository is
+Repeat Caller 1.2.0 is the production release dated **24 November 2026**. The
+official production distribution is the signed release package. A repository
+checkout is source code for review or development testing, not a production
+installation. The project repository is
 [freepbxUK/repeatcaller](https://github.com/freepbxUK/repeatcaller).
 
 ## Introduction
@@ -88,9 +82,8 @@ Use with FreePBX/PBXact 16 or 17.
 - PHP 7.4+
 - MariaDB 5.5-compatible schema (utf8/InnoDB key-size compatible)
 
-The module metadata targets FreePBX/PBXact 16 and 17, and repository contracts
-exercise supported interfaces and migration logic. Live installation, upgrade,
-endpoint and telephony acceptance remains a separate release-verification step.
+The module metadata supports FreePBX/PBXact 16 and 17. Validate integrations
+against the target PBX environment as part of deployment planning.
 
 ### Upgrade compatibility
 
@@ -115,29 +108,18 @@ FreePBX/PBXact system before production rollout.
 - Asterisk Manager access available for Alert Call originate
 - Optional FreePBX System Recordings for introductory Alert Call playback
 
-## Installing
+## Installing or Upgrading
 
 Repeat Caller is not listed in the FreePBX online module repository. For a
-production installation, obtain the signed 1.2.0 release package from the
-official release distribution when available, then upload it through Module
-Admin using the distribution's integrity-verification instructions. Do not use
-a development checkout for a production installation.
-
-## Install or Upgrade from the Official 1.2.0 Package
-
-When the signed 1.2.0 package is available, obtain it from the official release
-distribution. If a checksum is published, verify it using the exact filename
-and command supplied with that release. A checksum checks archive integrity;
-it does not authenticate the publisher or replace FreePBX module-signature
-verification. FreePBX checks the module signature separately when the package
-is uploaded and its signing key is trusted.
-
-In FreePBX/PBXact, open **Admin → Module Admin → Upload Modules**, select the
-release package, and upload it. Install it on a fresh system or choose Upgrade
-for an existing installation. Enable Repeat Caller if needed, then select Apply
-Config. Confirm Module Admin reports version `1.2.0` and the module page loads.
-Do not uninstall before upgrading; uninstall deletes rules, settings, incidents,
-and alert history.
+production installation or upgrade, use the official signed 1.2.0 package,
+`repeatcaller-1.2.0.tgz`, not a development source checkout. Follow the package
+verification instructions provided through the official release distribution.
+In FreePBX/PBXact, open
+**Admin → Module Admin → Upload Modules**, upload the package, then install it
+or choose Upgrade for an existing installation. Enable Repeat Caller if needed
+and select Apply Config. Confirm Module Admin reports version `1.2.0` and the
+module page loads under Reports > Repeat Caller. Do not uninstall to upgrade:
+uninstall deletes module data.
 
 ## Development Installation (Testing Only)
 
@@ -186,21 +168,10 @@ fwconsole chown
 fwconsole reload
 ```
 
-### Install from a local development copy
-
-For development testing, copy or symlink a local `repeatcaller` directory into
-`/var/www/html/admin/modules/repeatcaller/`, then run fwconsole commands from
-a neutral directory:
-
-```sh
-cd ~
-fwconsole ma installlocal repeatcaller
-fwconsole ma enable repeatcaller
-fwconsole chown
-fwconsole reload
-```
-
-The module appears under Reports > Repeat Caller.
+For a local development copy, stage or link its `repeatcaller` directory at
+`/var/www/html/admin/modules/repeatcaller/`, then run the install, enable,
+ownership and reload commands above from a neutral directory. Development files
+are for testing, not production installation.
 
 ## Updating Repeat Caller
 
@@ -246,14 +217,6 @@ fwconsole ma list | grep -i repeatcaller
 grep "<version>" /var/www/html/admin/modules/repeatcaller/module.xml
 ```
 
-### Upgrade from 1.1.0 to 1.2.0
-
-Use the signed 1.2.0 release package and the Module Admin upload procedure
-above. Select Upgrade for the existing 1.1.0 installation; do not uninstall
-first. Enable the module if necessary and select Apply Config. Confirm the
-installed version is `1.2.0` and verify existing rules, settings, incidents,
-and alert history remain present.
-
 ### Update a development Git checkout for testing
 
 After the first installation, `fwconsole chown` may cause Git to reject the
@@ -290,24 +253,6 @@ checked-out files, `enable` ensures the module is enabled, and `reload` applies
 generated dialplan. Run Git commands only when the installed module directory
 contains a `.git` directory.
 
-### Update from a local copy
-
-Re-copy or re-link your local `repeatcaller` directory into
-`/var/www/html/admin/modules/repeatcaller/`, then run the fwconsole commands
-from a neutral directory:
-
-```sh
-cd ~
-fwconsole ma installlocal repeatcaller
-fwconsole ma enable repeatcaller
-fwconsole chown
-fwconsole reload
-```
-
-After updating, open Reports > Repeat Caller and confirm rules, settings,
-active/recent incidents, alert history, and suppression history are still
-present.
-
 ### Verify the update
 
 After any update, check both the FreePBX module listing and the installed
@@ -320,7 +265,7 @@ grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 
 If either command does not report the expected version, the module has not
 updated successfully. Correct the update source or module directory first,
-then rerun the update before troubleshooting signing or signature verification.
+then rerun the update.
 
 ### If the Git update did not complete
 
@@ -329,9 +274,8 @@ before running FreePBX module commands. Preserve local changes; do not use a
 hard reset to force the checkout to a remote branch. After a successful source
 update, run `fwconsole ma installlocal repeatcaller`, enable the module if
 needed, reload, and verify both the module listing and installed `module.xml`.
-For the signed production release, use the official package workflow above.
-Signature troubleshooting applies only when the package is independently
-confirmed as signed; development checkouts are not release packages.
+For production, use the signed release package workflow above; development
+checkouts are not production packages.
 
 #### `git fetch origin` cannot find a remote branch
 
@@ -378,63 +322,6 @@ files are already on disk. Verify the installed version again:
 fwconsole ma list | grep -i repeatcaller
 grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
 ```
-
-### Signature troubleshooting for a confirmed signed package
-
-Use this procedure only when the installed package's signed status has been
-independently established. Verify each package's own signature and do not infer
-the signing status of one release from another. Before publication, confirm
-that these steps match the final package and FreePBX signing configuration.
-
-First confirm that the signed release files were actually installed. Check the
-FreePBX module listing, the installed `module.xml`, and the signature file:
-
-```sh
-fwconsole ma list | grep -i repeatcaller
-grep -m1 '<version>' /var/www/html/admin/modules/repeatcaller/module.xml
-ls -l /var/www/html/admin/modules/repeatcaller/module.sig
-```
-
-If the installed version does not match the published package you intended to
-install, resolve the source update before continuing. Confirm that the files
-match that package; a `module.sig` file alone does not establish publication or
-signature validity.
-
-Once the correct signed files and version are installed, first try:
-
-```sh
-fwconsole ma refreshsignatures
-fwconsole chown
-fwconsole reload
-```
-
-Then recheck Module Admin. If it still says unsigned, continue with the
-`Module is Unsigned` procedure below.
-
-#### Module is Unsigned
-
-If files from a published package expected to be signed are installed but
-Module Admin still reports the module as unsigned after the signature refresh,
-repeat the version, metadata, and signature-file checks above. If the package
-identity or signing status is uncertain, resolve that first; do not infer it
-from an untagged development checkout.
-
-#### Signed by unknown or untrusted key
-
-If Module Admin reports an unknown or untrusted key, follow the current
-FreePBX module-signing guidance to verify the release signer and establish
-trust. Do not import keys or rely on a key identifier based only on this README.
-Recheck the status in Module Admin after resolving the trust issue.
-
-Troubleshooting order:
-
-1. Verify the installed module version and `module.xml`.
-2. If the version is old, resolve the incomplete source update.
-3. Only for a package independently confirmed as signed, investigate an
-  unsigned status and refresh FreePBX's module signatures.
-4. If the module is reported as signed by an unknown or untrusted key, follow
-  FreePBX module-signing guidance to establish trust.
-5. Refresh signatures and verify the final status in Module Admin.
 
 ## Background Processing
 
@@ -615,10 +502,9 @@ would use from a FreePBX extension. The example/placeholder follows the
 configured Default Country Code.
 
 When an Alert Call destination is added in the rule editor, Repeat Caller
-automatically adds the same value to Ignore these callers and shows a one-time
-warning. Alert Call destinations are automatically added to Ignore these
-callers to reduce the risk of self-triggering if an alert call routes back
-through a monitored DID.
+automatically adds it to Ignore these callers and shows a one-time warning.
+This reduces the risk of self-triggering if an alert call routes back through a
+monitored DID.
 
 When Alert Call is enabled and Caller ID managed elsewhere is disabled, Repeat
 Caller may also add the configured Alert Call Caller ID to Ignore these
@@ -1057,40 +943,10 @@ environment as part of deployment planning.
 
 ### 1.2.0, 24 November 2026
 
-Intended production release dated 24 November 2026, building on 1.1.0. This
-entry records the intended release date and changes; it does not verify package
-signing, FreePBX signature recognition, or publication.
-
-#### Administration interface and usability
-
-- Modernises the FreePBX/PBXact administration interface with improved
-  section navigation and operational presentation, while retaining familiar
-  native FreePBX styling.
-- Provides responsive layouts for desktop and narrower screens, aligning the
-  page title/header, navigation tabs, Engine Status panel, and subsequent
-  content panels to consistent boundaries.
-- Improves accessibility with a skip link, visible keyboard focus, labelled
-  navigation and controls, live status announcements, and reduced-motion support.
-
-#### Detection and reporting
-
-- Corrects Any Caller matching for anonymous and withheld CDR identities,
-  including formatted restricted/unavailable values, while preserving explicit
-  exclusion, rule/route grouping, thresholds, schedules and journey deduplication.
-- Improves Run Now feedback with execution and incident counts, explains when
-  monitoring is disabled, and does not replay already processed journeys.
-
-#### Incident lifecycle and Alert Calls
-
-- Prevents further GUI, email, and Alert Call notifications after acceptance.
-  This applies regardless of suppression settings or expiry. Queued work is
-  cancelled where possible and email eligibility is rechecked before handoff;
-  already delivered or externally handed-off messages cannot be recalled.
-  The accepted incident's state and subject linkage remain intact through
-  suppression reconciliation, observed clearing, and rearming.
-- Moves Alert Call dialplan generation to FreePBX BMO. Upgrade preflight checks
-  legacy references before schema changes; cleanup preserves administrator
-  dialplan and refuses unmanaged references, with a repeatable retry path.
+Fixes anonymous and withheld caller detection, Run Now feedback, and
+notifications continuing after incident acceptance. Moves Alert Call dialplan
+generation to FreePBX BMO, improves legacy dialplan cleanup during upgrades,
+and modernises the administration interface.
 
 ### 1.1.0, first signed FreePBX UK release, 20 October 2026
 
