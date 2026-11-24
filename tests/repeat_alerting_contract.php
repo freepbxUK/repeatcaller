@@ -98,19 +98,73 @@ function assert_same($expected, $actual, string $message): void {
 	}
 }
 
-$installSource = file_get_contents(__DIR__ . '/../install.php');
-assert_true($installSource !== false, 'install.php should be readable for alert-call dialplan contract checks');
+$dialplanOwnerSource = file_get_contents(__DIR__ . '/../Repeatcaller.class.php');
+assert_true($dialplanOwnerSource !== false, 'BMO class should be readable for alert-call dialplan contract checks');
+assert_true(preg_match('/<<<\x27CONF\x27\n(.*?)\nCONF;/s', $dialplanOwnerSource, $generatedDialplanMatch) === 1, 'BMO generation must contain the migrated Alert Call dialplan');
+$installSource = $generatedDialplanMatch[1];
 assert_true(strpos($installSource, 'U(repeatcaller-alert-playback^${REPEATCALLER_PLAYBACK_TARGET}^${IF($["${REPEATCALLER_PLAYBACK_LANGUAGE}"=""]?${CHANNEL(language)}:${REPEATCALLER_PLAYBACK_LANGUAGE})}^${REPEATCALLER_ALERT_HISTORY_ID}^${REPEATCALLER_INCIDENT_ID}^${REPEATCALLER_ALERT_RECIPIENT}^${REPEATCALLER_SUMMARY_MODE}^${REPEATCALLER_SUMMARY_CALL_COUNT}^${REPEATCALLER_SUMMARY_THRESHOLD}^${REPEATCALLER_SUMMARY_WINDOW_MINUTES}^${REPEATCALLER_SUMMARY_CALLER_KIND}^${REPEATCALLER_SUMMARY_CALLER_VALUE}^${REPEATCALLER_SUMMARY_DID_VALUE}^${REPEATCALLER_RECORDING_LANGUAGE})') !== false, 'called-channel U() invocation must carry summary values and the independent recording language into alert playback');
-assert_true(strpos($installSource, 'AGI(__REPEATCALLER_AGI_SCRIPT__,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,${REPEATCALLER_ALERT_RECIPIENT},${ARG1},${ARG6},${ARG7},${ARG8},${ARG9},${ARG10},${ARG11},${ARG12},${ARG13})') !== false, 'generated alert-playback dialplan must delegate answered-call interaction to one recording-language-aware AGI session');
+assert_true(strpos($installSource, 'AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,${REPEATCALLER_ALERT_RECIPIENT},${ARG1},${ARG6},${ARG7},${ARG8},${ARG9},${ARG10},${ARG11},${ARG12},${ARG13})') !== false, 'generated alert-playback dialplan must delegate answered-call interaction to one recording-language-aware AGI session');
 assert_true(strpos($installSource, 'Read(REPEATCALLER_DTMF') === false, 'answered-call interaction must no longer depend on dialplan Read() collection');
 assert_true(strpos($installSource, 'While($[') === false, 'response loop must be finite and must not rely on an unbounded While retry structure');
-assert_true(strpos($installSource, '[repeatcaller-alert-summary]') !== false, 'generated dialplan may retain the summary helper context for compatibility even though answered-call interaction is now AGI-owned');
+assert_true(strpos($installSource, '[repeatcaller-alert-summary]') === false, 'generated dialplan must omit the obsolete summary helper now that answered-call interaction is AGI-owned');
+assert_true(strpos($installSource, 'repeatcaller-alert-accept-check') === false, 'generated dialplan must not reference the undefined legacy acceptance-check subroutine');
 assert_true(strpos($installSource, 'exten => remote_accepted,1,Set(REPEATCALLER_ALERT_COMPLETED=1)') !== false, 'generated dialplan must expose a dedicated remote_accepted extension so other answered callers can be redirected out immediately on remote acceptance');
 assert_true(strpos($installSource, 'exten => remote_accepted,1,Set(REPEATCALLER_ALERT_COMPLETED=1)') !== false, 'already answered concurrent callers must be routed to thank-you and goodbye once the incident is accepted elsewhere');
-assert_true(strpos($installSource, 'exten => h,1,GotoIf($["${REPEATCALLER_ALERT_COMPLETED}"="1"]?done)') !== false, 'hangup handling must preserve accepted, declined, and third-attempt no-response terminal outcomes');
-preg_match('/\[repeatcaller-alert-playback\]([\s\S]*?)\[repeatcaller-alert-summary\]/', $installSource, $playbackMatch);
+assert_true(strpos($installSource, 'AGI(repeatcaller_alert_response.php,${REPEATCALLER_ALERT_HISTORY_ID},${REPEATCALLER_INCIDENT_ID},interactive,') !== false && strpos($installSource, 'same => n,Hangup()') !== false, 'answered playback must leave terminal response and hangup disposition to the interactive AGI session');
+preg_match('/\[repeatcaller-alert-playback\]([\s\S]*)$/', $installSource, $playbackMatch);
 assert_true(!empty($playbackMatch[1]), 'generated playback context should be present for remote-accept prompt regression checks');
 $playbackBlock = $playbackMatch[1];
+assert_true(strpos($playbackBlock, 'Set(CHANNEL(hangup_handler_push)=repeatcaller-alert-playback-cleanup,s,1)') !== false, 'answered playback must attach a hangup handler before entering interactive playback');
+$cleanupMatch = preg_match('/\[repeatcaller-alert-playback-cleanup\]([\s\S]*?)\n\z/', $playbackBlock, $cleanupMatches);
+assert_true($cleanupMatch === 1, 'generated dialplan should include the playback cleanup handler context');
+$playbackCleanupBlock = (string)$cleanupMatches[1];
+assert_true(strpos($playbackCleanupBlock, 'DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)') !== false, 'playback cleanup must compare the stored channel owner');
+assert_true(strpos($playbackCleanupBlock, 'DB(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)') !== false, 'playback cleanup must compare the stored channel uniqueid');
+assert_true(strpos($playbackCleanupBlock, 'DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_channel)') !== false, 'playback cleanup must remove the owned channel record');
+assert_true(strpos($playbackCleanupBlock, 'DB_DELETE(repeatcaller/alertcall/${REPEATCALLER_ALERT_HISTORY_ID}/playback_uniqueid)') !== false, 'playback cleanup must remove the owned uniqueid record');
+
+$simulatePlaybackHangupCleanup = static function (array $astDb, int $historyId, string $channel, string $uniqueid) use ($playbackCleanupBlock): array {
+	$channelKey = 'repeatcaller/alertcall/' . $historyId . '/playback_channel';
+	$uniqueidKey = 'repeatcaller/alertcall/' . $historyId . '/playback_uniqueid';
+	$handlerHasOwnershipGuards = strpos($playbackCleanupBlock, '"${CHANNEL(name)}"') !== false
+		&& strpos($playbackCleanupBlock, '"${CHANNEL(uniqueid)}"') !== false
+		&& strpos($playbackCleanupBlock, 'DB_DELETE') !== false;
+	if ($handlerHasOwnershipGuards
+		&& (string)($astDb[$channelKey] ?? '') === $channel
+		&& (string)($astDb[$uniqueidKey] ?? '') === $uniqueid) {
+		unset($astDb[$channelKey], $astDb[$uniqueidKey]);
+	}
+	return $astDb;
+};
+$normalCleanupDb = [
+	'repeatcaller/alertcall/10/playback_channel' => 'Local/1000@from-internal-0010;2',
+	'repeatcaller/alertcall/10/playback_uniqueid' => 'uid-10',
+];
+$normalCleanupDb = $simulatePlaybackHangupCleanup($normalCleanupDb, 10, 'Local/1000@from-internal-0010;2', 'uid-10');
+assert_same([], $normalCleanupDb, 'normal Alert Call completion must remove its playback AstDB records');
+$earlyHangupDb = [
+	'repeatcaller/alertcall/11/playback_channel' => 'Local/1000@from-internal-0011;2',
+	'repeatcaller/alertcall/11/playback_uniqueid' => 'uid-11',
+];
+$earlyHangupDb = $simulatePlaybackHangupCleanup($earlyHangupDb, 11, 'Local/1000@from-internal-0011;2', 'uid-11');
+assert_same([], $earlyHangupDb, 'an early called-party hangup must invoke the same ownership-guarded cleanup');
+$remoteCleanupDb = [
+	'repeatcaller/alertcall/12/playback_channel' => 'Local/1000@from-internal-0012;2',
+	'repeatcaller/alertcall/12/playback_uniqueid' => 'uid-12',
+];
+$remoteCleanupDb = $simulatePlaybackHangupCleanup($remoteCleanupDb, 12, 'Local/1000@from-internal-0012;2', 'uid-12');
+assert_same([], $remoteCleanupDb, 'remote acceptance redirect termination must remove playback AstDB records');
+$repeatCleanupDb = $simulatePlaybackHangupCleanup($remoteCleanupDb, 12, 'Local/1000@from-internal-0012;2', 'uid-12');
+assert_same([], $repeatCleanupDb, 'repeated playback cleanup must be idempotent');
+$staleCleanupDb = [
+	'repeatcaller/alertcall/13/playback_channel' => 'Local/1000@from-internal-0013;2',
+	'repeatcaller/alertcall/13/playback_uniqueid' => 'uid-new',
+	'repeatcaller/alertcall/14/playback_channel' => 'Local/1001@from-internal-0014;2',
+	'repeatcaller/alertcall/14/playback_uniqueid' => 'uid-14',
+];
+$staleCleanupResult = $simulatePlaybackHangupCleanup($staleCleanupDb, 13, 'Local/1000@from-internal-0013;2', 'uid-old');
+assert_same($staleCleanupDb, $staleCleanupResult, 'a stale channel reference must not delete records owned by another channel uniqueid');
+
 preg_match('/exten => remote_accepted,1,Set\(REPEATCALLER_ALERT_COMPLETED=1\)([\s\S]*?)exten => 1,1,Goto\(s,remote_accepted\)/', $playbackBlock, $remoteAcceptedMatch);
 assert_true(!empty($remoteAcceptedMatch[1]), 'generated playback context should include a remote_accepted extension block for accepted-elsewhere redirects');
 $remoteAcceptedBlock = $remoteAcceptedMatch[1];
@@ -880,6 +934,7 @@ final class FakeEmailSender {
 	public array $calls = [];
 	/** @var array<string, string> */
 	public array $failuresByRecipient = [];
+	public $afterSend;
 
 	public function __invoke(string $recipient, string $subject, string $message): array {
 		$this->calls[] = [
@@ -887,6 +942,9 @@ final class FakeEmailSender {
 			'subject' => $subject,
 			'message' => $message,
 		];
+		if (is_callable($this->afterSend)) {
+			call_user_func($this->afterSend, $recipient);
+		}
 
 		if (isset($this->failuresByRecipient[strtolower($recipient)])) {
 			return ['status' => false, 'message' => $this->failuresByRecipient[strtolower($recipient)]];
@@ -927,6 +985,7 @@ final class FakeCallSender {
 final class FakeAstman {
 	public array $requests = [];
 	public array $dbValues = [];
+	public array $channelUniqueids = [];
 
 	public function send_request(string $action, array $params) {
 		$this->requests[] = ['action' => $action, 'params' => $params];
@@ -936,6 +995,13 @@ final class FakeAstman {
 				return ['Response' => 'Success', 'Val' => (string)$this->dbValues[$key]];
 			}
 			return ['Response' => 'Error', 'Message' => 'Database entry not found'];
+		}
+		if ($action === 'Getvar' && (string)($params['Variable'] ?? '') === 'CHANNEL(uniqueid)') {
+			$channel = (string)($params['Channel'] ?? '');
+			if (array_key_exists($channel, $this->channelUniqueids)) {
+				return ['Response' => 'Success', 'Val' => (string)$this->channelUniqueids[$channel]];
+			}
+			return ['Response' => 'Error', 'Message' => 'No such channel'];
 		}
 
 		return ['Response' => 'Success', 'Message' => 'Success'];
@@ -1251,6 +1317,25 @@ assert_true(strpos($classSource, "'Account' => 'repeatcaller_alert_internal'") !
 assert_true(strpos($classSource, 'REPEATCALLER_INTERNAL_ORIGIN=1,__REPEATCALLER_INTERNAL_ORIGIN=1') !== false, 'alert call originate variables should carry explicit internal-origin marker flags for module-owned legs');
 assert_true(strpos($classSource, 'REPEATCALLER_RECORDING_LANGUAGE=') !== false, 'alert call originate must carry System Recording language separately from the global generated-message language');
 assert_true(strpos($classSource, 'if ($callerId !== \'\') {') !== false && strpos($classSource, '$params[\'CallerID\'] = $callerId;') !== false, 'originate should only include CallerID when Repeat Caller is explicitly setting a nonblank value');
+$savedAstman = $GLOBALS['astman'] ?? null;
+$originateManager = new FakeAstman();
+$GLOBALS['astman'] = $originateManager;
+foreach (['201', '02079460000'] as $originateDestination) {
+	foreach (['', '+441234567890'] as $originateNumber) {
+		$originateResult = $repeatcaller->sendAlertCall($originateDestination, '', $originateNumber, ['history_id' => 42, 'incident_id' => 12]);
+		assert_true(!empty($originateResult['status']), 'both internal and external destinations must retain the normal AMI originate path');
+		$originateRequest = end($originateManager->requests);
+		assert_same('Originate', $originateRequest['action'], 'Alert Calls must use AMI Originate');
+		assert_same('Local/' . $originateDestination . '@repeatcaller-alert-launch/n', $originateRequest['params']['Channel'], 'caller presentation must not bypass normal Local/FreePBX routing');
+		assert_same($originateNumber !== '', array_key_exists('CallerID', $originateRequest['params']), 'managed-elsewhere Caller ID must remain omitted rather than replaced');
+		if ($originateNumber !== '') {
+			assert_same($originateNumber, $originateRequest['params']['CallerID'], 'explicit caller numbers must remain byte-for-byte unchanged');
+		}
+		assert_true(strpos($originateRequest['params']['Variable'], '__REPEATCALLER_INTERNAL_ORIGIN=1') !== false, 'AMI must retain the inherited marker for final receiving-channel checks');
+		assert_true(strpos($originateRequest['params']['Variable'], 'CALLERID(') === false && strpos($originateRequest['params']['Variable'], 'CONNECTEDLINE(') === false, 'AMI must not inject identity overrides affecting external calls');
+	}
+}
+$GLOBALS['astman'] = $savedAstman;
 $alertProcessorSource = file_get_contents(__DIR__ . '/../src/IncidentAlertProcessor.php');
 assert_true($alertProcessorSource !== false, 'IncidentAlertProcessor.php should be readable for system identifier contract checks');
 assert_true(strpos($alertProcessorSource, "FreePBX::Config()->get('FREEPBX_SYSTEM_IDENT')") !== false, 'email output should source the system identifier from the supported FreePBX Config API');
@@ -1916,14 +2001,141 @@ assert_same(0, (int)$acceptedRepeatStateSuppressed['reminders_sent'], 'DTMF-acce
 $acceptedRepeatDb->prepare('UPDATE repeatcaller_incidents SET last_matched_at = ?, matched_call_count = ?, suppression_expires_at = ? WHERE id = ?')->execute(['2026-07-13 11:05:00', 4, '2026-07-13 11:00:00', $acceptedRepeatIncident]);
 $acceptedRepeatClock->now = '2026-07-13 11:05:00';
 $acceptedRepeatProcessor->run(settings());
-assert_same(1, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'gui'"), 'DTMF-accepted incidents should reserve one fresh GUI reminder after suppression expiry and new activity');
-assert_same(1, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'email'"), 'DTMF-accepted incidents should reserve one fresh email reminder after suppression expiry and new activity');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'gui'"), 'DTMF-accepted incidents must not reserve GUI reminders after suppression expiry and new activity');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'email'"), 'DTMF-accepted incidents must not reserve email reminders after suppression expiry and new activity');
 assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_1' AND stage_n = 0 AND action_type = 'alert_call'"), 'DTMF-accepted incidents should not restart Alert Call activity after acceptance, even after suppression expiry and new activity');
-assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_2'"), 'DTMF-accepted incidents should restart reminder stages at the first fresh post-suppression stage');
-assert_same(1, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND action_type = 'email' AND event_type LIKE 'reminder_%' AND delivery_status = 'sent'"), 'DTMF-accepted incidents should deliver email once the fresh post-suppression reminder is reserved');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND event_type = 'reminder_2'"), 'DTMF-accepted incidents must not restart reminder stages');
+assert_same(0, count_history($acceptedRepeatDb, "incident_id = {$acceptedRepeatIncident} AND action_type = 'email' AND event_type LIKE 'reminder_%' AND delivery_status = 'sent'"), 'DTMF-accepted incidents must not deliver post-suppression reminder emails');
 $acceptedRepeatStateExpired = $acceptedRepeatDb->query("SELECT last_alert_at, reminders_sent FROM repeatcaller_incident_alert_state WHERE incident_id = {$acceptedRepeatIncident}")->fetch(PDO::FETCH_ASSOC);
-assert_same('2026-07-13 11:05:00', (string)$acceptedRepeatStateExpired['last_alert_at'], 'DTMF-accepted incidents should advance the reminder checkpoint once suppression has expired and a fresh reminder is reserved');
-assert_same(1, (int)$acceptedRepeatStateExpired['reminders_sent'], 'DTMF-accepted incidents should advance the reminder count once suppression has expired and a fresh reminder is reserved');
+assert_same('2026-07-13 10:00:00', (string)$acceptedRepeatStateExpired['last_alert_at'], 'DTMF-accepted incidents must preserve the last-alert checkpoint after suppression expires');
+assert_same(0, (int)$acceptedRepeatStateExpired['reminders_sent'], 'DTMF-accepted incidents must not advance the reminder count after suppression expires');
+
+foreach (['gui', 'alert_call'] as $acceptanceSource) {
+	foreach (['never', '5m', 'hourly', 'daily', 'escalating'] as $reminderMode) {
+		foreach ([null, '2026-07-13 09:59:00', '2026-07-13 12:00:00'] as $suppressionExpiry) {
+			$acceptanceClock = new TestClock('2026-07-13 10:00:00');
+			$acceptanceEmails = new FakeEmailSender();
+			$acceptanceCalls = new FakeCallSender();
+			[$acceptanceDb, $acceptanceProcessor] = create_alert_environment($acceptanceClock, $acceptanceEmails, $acceptanceCalls);
+			$acceptanceRule = insert_rule($acceptanceDb, ['email_enabled' => 1, 'alert_call_enabled' => 1, 'alert_call_destinations' => '801', 'alert_reminder_mode_override' => $reminderMode]);
+			$acceptanceIncident = insert_incident($acceptanceDb, ['rule_id' => $acceptanceRule, 'subject_key' => 'accepted-matrix', 'first_matched_at' => $acceptanceClock->now]);
+			$acceptanceProcessor->run(settings());
+			$acceptanceRepository = new RepeatCallerRepository($acceptanceDb);
+			if ($acceptanceSource === 'gui') {
+				assert_true($acceptanceRepository->acceptActiveIncident($acceptanceIncident, 'operator', '2026-07-13 10:01:00', 'gui'), 'GUI acceptance must succeed');
+			} else {
+				$acceptanceHistoryId = (int)$acceptanceDb->query("SELECT id FROM repeatcaller_incident_alert_history WHERE action_type = 'alert_call'")->fetchColumn();
+				$acceptanceResult = $acceptanceRepository->recordAlertCallDtmfResponse($acceptanceHistoryId, $acceptanceIncident, 'accepted', '801', '1', '2026-07-13 10:01:00');
+				assert_true(!empty($acceptanceResult['accepted']), 'telephone acceptance must succeed');
+			}
+			$historyBefore = $acceptanceDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+			$stateBefore = $acceptanceRepository->loadIncidentAlertState($acceptanceIncident);
+			assert_true(!$acceptanceRepository->markReminderAlertSent($acceptanceIncident, 0, 1, '2026-07-13 11:05:00', null, '2026-07-13 11:05:00'), 'an accepted reminder checkpoint must reject stale advancement');
+			$acceptedCallHistory = (int)$acceptanceDb->query("SELECT id FROM repeatcaller_incident_alert_history WHERE action_type = 'alert_call'")->fetchColumn();
+			assert_same(null, $acceptanceRepository->buildDeclineNotificationContext($acceptedCallHistory, $acceptanceIncident), 'late decline callbacks must not produce email context for accepted incidents');
+			$acceptanceDb->prepare('UPDATE repeatcaller_incidents SET suppression_expires_at = ? WHERE id = ?')->execute([$suppressionExpiry, $acceptanceIncident]);
+			$acceptanceRepository->updateIncidentWithCall($acceptanceIncident, '2026-07-13 11:05:00', 6);
+			$acceptanceClock->now = '2026-07-13 11:06:00';
+			$acceptanceProcessor->run(settings());
+			$acceptanceProcessor->run(settings());
+			assert_same([], $acceptanceRepository->loadAlertEligibleIncidents($acceptanceClock->now), 'accepted incidents must not become alert-eligible in any mode or suppression state');
+			assert_same($historyBefore, $acceptanceDb->query('SELECT * FROM repeatcaller_incident_alert_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), 'accepted incident processing must preserve existing history without new events');
+			assert_same($stateBefore, $acceptanceRepository->loadIncidentAlertState($acceptanceIncident), 'accepted activity must not advance reminder state');
+			assert_same(1, count($acceptanceEmails->calls), 'accepted activity must not send further emails');
+			assert_same(1, count($acceptanceCalls->calls), 'accepted activity must not send further Alert Calls');
+			assert_same(6, (int)$acceptanceDb->query('SELECT matched_call_count FROM repeatcaller_incidents')->fetchColumn(), 'accepted statistics must still update');
+		}
+	}
+}
+
+$queueClock = new TestClock('2026-07-13 10:00:00');
+$queueEmails = new FakeEmailSender();
+$queueCalls = new FakeCallSender();
+[$queueDb, $queueProcessor] = create_alert_environment($queueClock, $queueEmails, $queueCalls);
+$queueRule = insert_rule($queueDb, ['email_enabled' => 1, 'alert_call_enabled' => 1, 'alert_call_destinations' => '801', 'alert_reminder_mode_override' => '5m']);
+$queueIncident = insert_incident($queueDb, ['rule_id' => $queueRule, 'subject_key' => 'queued-acceptance', 'first_matched_at' => $queueClock->now]);
+$queueRepository = new RepeatCallerRepository($queueDb);
+foreach (['email', 'alert_call'] as $actionType) {
+	foreach (['pending', 'snoozed', 'failed', 'sending', 'sent'] as $deliveryStatus) {
+		assert_true($queueRepository->reserveIncidentAlertHistory([
+			'incident_id' => $queueIncident, 'rule_id' => $queueRule, 'subject_key' => 'queued-acceptance', 'subject_label' => 'Queue acceptance',
+			'action_type' => $actionType, 'event_type' => 'initial', 'stage_n' => 0, 'recipient' => $deliveryStatus . '@example.invalid',
+			'delivery_status' => $deliveryStatus, 'successful_at' => $deliveryStatus === 'sent' ? $queueClock->now : null,
+			'next_retry_at' => $queueClock->now, 'alert_reminder_mode' => '5m', 'dedupe_key' => $actionType . '-' . $deliveryStatus,
+			'created_at' => $queueClock->now, 'updated_at' => $queueClock->now,
+		]), 'active incidents must permit notification reservation');
+	}
+}
+$alreadySent = $queueDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE delivery_status = 'sent' ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+$staleEmails = $queueRepository->loadDeliverableEmailAlerts($queueClock->now);
+assert_true($queueRepository->acceptActiveIncident($queueIncident, 'operator', '2026-07-13 10:01:00', 'gui'), 'acceptance must cancel outstanding work');
+assert_same(4, count_history($queueDb, "action_type = 'email' AND delivery_status = 'failed' AND next_retry_at IS NULL AND failure_detail = 'cancelled after incident accepted'"), 'pending, failed, snoozed and sending emails must be cancelled');
+assert_same(3, count_history($queueDb, "action_type = 'alert_call' AND failure_detail = 'cancelled after incident accepted'"), 'outstanding Alert Call attempts must retain existing cancellation behaviour');
+assert_same($alreadySent, $queueDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE delivery_status = 'sent' ORDER BY id")->fetchAll(PDO::FETCH_ASSOC), 'acceptance must not alter successfully delivered history');
+assert_same([], $queueRepository->loadDeliverableEmailAlerts('2026-07-13 10:02:00'), 'accepted incident emails must be excluded from delivery');
+foreach ($staleEmails as $staleEmail) {
+	assert_true(!$queueRepository->markEmailAlertSending((int)$staleEmail['id'], '2026-07-13 10:02:00'), 'a stale delivery snapshot must not mark an email for an accepted incident as sending');
+	$cancelledEmail = $queueDb->query('SELECT * FROM repeatcaller_incident_alert_history WHERE id = ' . (int)$staleEmail['id'])->fetch(PDO::FETCH_ASSOC);
+	$queueRepository->markEmailAlertSnoozed((int)$staleEmail['id'], '2026-07-13 10:02:00');
+	assert_same($cancelledEmail, $queueDb->query('SELECT * FROM repeatcaller_incident_alert_history WHERE id = ' . (int)$staleEmail['id'])->fetch(PDO::FETCH_ASSOC), 'a stale snooze snapshot must not revive cancelled accepted work');
+}
+$reservationMethod = new ReflectionMethod(IncidentAlertProcessor::class, 'processIncidentStage');
+$reservationMethod->setAccessible(true);
+$staleIncident = ['id' => $queueIncident, 'rule_id' => $queueRule, 'state' => 'active', 'subject_key' => 'queued-acceptance', 'subject_label' => 'Queue acceptance', 'first_matched_at' => $queueClock->now, 'email_enabled' => 1, 'email_recipients' => 'late@example.invalid'];
+$staleSummary = ['email_queued' => 0, 'alert_call_queued' => 0, 'initial_events' => 0];
+$reservationMethod->invokeArgs($queueProcessor, [$staleIncident, &$staleSummary, '2026-07-13 10:02:00']);
+assert_same(10, count_history($queueDb), 'repository reservation must reject accepted incidents even through a stale active snapshot');
+assert_true(!$queueRepository->markInitialAlertSent($queueIncident, '2026-07-13 10:02:00', null, '2026-07-13 10:02:00'), 'accepted initial checkpoints must not advance');
+$queueProcessor->run(settings());
+assert_same(0, count($queueEmails->calls) + count($queueCalls->calls), 'queued work must not be delivered after acceptance');
+
+$interleavedClock = new TestClock('2026-07-13 10:00:00');
+$interleavedEmails = new FakeEmailSender();
+[$interleavedDb, $interleavedProcessor] = create_alert_environment($interleavedClock, $interleavedEmails);
+$interleavedRule = insert_rule($interleavedDb, ['email_enabled' => 1, 'email_recipients' => 'one@example.invalid,two@example.invalid,three@example.invalid']);
+$interleavedIncident = insert_incident($interleavedDb, ['rule_id' => $interleavedRule, 'subject_key' => 'accept-during-delivery', 'first_matched_at' => $interleavedClock->now]);
+$interleavedEmails->afterSend = function () use ($interleavedDb, $interleavedIncident): void {
+	(new RepeatCallerRepository($interleavedDb))->acceptActiveIncident($interleavedIncident, 'operator', '2026-07-13 10:00:01', 'gui');
+};
+$interleavedProcessor->run(settings());
+assert_same(1, count($interleavedEmails->calls), 'acceptance during one handover must prevent the remaining loaded email deliveries');
+assert_same(1, count_history($interleavedDb, "action_type = 'email' AND delivery_status = 'sent'"), 'a completed handover must remain recorded as sent');
+assert_same(2, count_history($interleavedDb, "action_type = 'email' AND failure_detail = 'cancelled after incident accepted'"), 'remaining email recipients must be cancelled');
+
+$failedHandoverClock = new TestClock('2026-07-13 10:00:00');
+$failedHandoverEmails = new FakeEmailSender();
+$failedHandoverEmails->failuresByRecipient['alerts@example.invalid'] = 'simulated mailer failure';
+[$failedHandoverDb, $failedHandoverProcessor] = create_alert_environment($failedHandoverClock, $failedHandoverEmails);
+$failedHandoverRule = insert_rule($failedHandoverDb, ['email_enabled' => 1]);
+$failedHandoverIncident = insert_incident($failedHandoverDb, ['rule_id' => $failedHandoverRule, 'subject_key' => 'accept-during-failed-delivery', 'first_matched_at' => $failedHandoverClock->now]);
+$failedHandoverCancelled = null;
+$failedHandoverEmails->afterSend = function () use ($failedHandoverDb, $failedHandoverIncident, &$failedHandoverCancelled): void {
+	assert_same('sending', $failedHandoverDb->query("SELECT delivery_status FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetchColumn(), 'the email must be marked sending before its sender runs');
+	assert_true((new RepeatCallerRepository($failedHandoverDb))->acceptActiveIncident($failedHandoverIncident, 'operator', '2026-07-13 10:00:01', 'gui'), 'acceptance must succeed during the failed email handover');
+	$failedHandoverCancelled = $failedHandoverDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetch(PDO::FETCH_ASSOC);
+};
+$failedHandoverProcessor->run(settings());
+$failedHandoverResult = $failedHandoverDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetch(PDO::FETCH_ASSOC);
+assert_same(1, count($failedHandoverEmails->calls), 'the failed handover regression must attempt one email');
+assert_same('failed', $failedHandoverResult['delivery_status'], 'the cancelled email must retain the existing failed delivery state');
+assert_same('cancelled after incident accepted', $failedHandoverResult['failure_detail'], 'a sender failure after acceptance must not replace the cancellation detail');
+assert_same(null, $failedHandoverResult['next_retry_at'], 'a sender failure after acceptance must not restore a retry time');
+assert_same($failedHandoverCancelled, $failedHandoverResult, 'a sender failure must leave the complete acceptance cancellation record unchanged');
+assert_same([], (new RepeatCallerRepository($failedHandoverDb))->loadDeliverableEmailAlerts('2026-07-13 10:10:00'), 'the cancelled failed email must not subsequently become deliverable');
+$failedHandoverClock->now = '2026-07-13 10:10:00';
+$failedHandoverProcessor->run(settings());
+assert_same(1, count($failedHandoverEmails->calls), 'later processing must not retry the cancelled failed email');
+assert_same($failedHandoverCancelled, $failedHandoverDb->query("SELECT * FROM repeatcaller_incident_alert_history WHERE action_type = 'email'")->fetch(PDO::FETCH_ASSOC), 'later processing must preserve the acceptance cancellation record');
+
+$markSendingClock = new TestClock('2026-07-13 10:00:00');
+$markSendingEmails = new FakeEmailSender();
+[$markSendingDb, $markSendingProcessor] = create_alert_environment($markSendingClock, $markSendingEmails);
+$markSendingRule = insert_rule($markSendingDb, ['email_enabled' => 1]);
+$markSendingIncident = insert_incident($markSendingDb, ['rule_id' => $markSendingRule, 'subject_key' => 'accept-while-marking-sending', 'first_matched_at' => $markSendingClock->now]);
+$markSendingDb->exec("CREATE TRIGGER acceptance_during_mark_sending BEFORE UPDATE OF delivery_status ON repeatcaller_incident_alert_history WHEN NEW.delivery_status = 'sending' AND NEW.action_type = 'email' BEGIN UPDATE repeatcaller_incidents SET state = 'accepted' WHERE id = NEW.incident_id; END");
+$markSendingProcessor->run(settings());
+assert_same(0, count($markSendingEmails->calls), 'acceptance while an email is being marked sending must be caught by the final pre-handover state check');
+assert_same(1, count_history($markSendingDb, "action_type = 'email' AND failure_detail = 'cancelled after incident accepted'"), 'an email marked sending must be cancelled when acceptance wins before handover');
 
 $declineClock = new TestClock('2026-07-13 11:00:00');
 $declineSender = new FakeCallSender();
@@ -2389,9 +2601,17 @@ assert_same(0, count_history($parallelAcceptDb, "incident_id = {$parallelAcceptI
 
 $astman = new FakeAstman();
 $astman->dbValues['repeatcaller/alertcall/1/launch_channel'] = 'Local/780@repeatcaller-alert-launch-0001;1';
+$astman->dbValues['repeatcaller/alertcall/1/launch_uniqueid'] = 'launch-0001';
 $astman->dbValues['repeatcaller/alertcall/1/playback_channel'] = 'Local/780@from-internal-0001;2';
+$astman->dbValues['repeatcaller/alertcall/1/playback_uniqueid'] = 'playback-0001';
 $astman->dbValues['repeatcaller/alertcall/2/launch_channel'] = 'Local/781@repeatcaller-alert-launch-0002;1';
+$astman->dbValues['repeatcaller/alertcall/2/launch_uniqueid'] = 'launch-0002';
 $astman->dbValues['repeatcaller/alertcall/2/playback_channel'] = 'Local/781@from-internal-0002;2';
+$astman->dbValues['repeatcaller/alertcall/2/playback_uniqueid'] = 'playback-0002';
+$astman->channelUniqueids['Local/780@repeatcaller-alert-launch-0001;1'] = 'launch-0001';
+$astman->channelUniqueids['Local/780@from-internal-0001;2'] = 'playback-0001';
+$astman->channelUniqueids['Local/781@repeatcaller-alert-launch-0002;1'] = 'launch-0002';
+$astman->channelUniqueids['Local/781@from-internal-0002;2'] = 'playback-0002';
 $signalModule = new \FreePBX\modules\Repeatcaller(new stdClass());
 $signalModule->signalIncidentAcceptedForLiveAlertCalls($parallelAcceptIncident, 1);
 $requestActions = array_map(static function (array $request): string {
@@ -2399,8 +2619,33 @@ $requestActions = array_map(static function (array $request): string {
 }, $astman->requests);
 assert_true(in_array('DBPut', $requestActions, true), 'acceptance signalling should mark the incident accepted in Asterisk DB for live legs');
 assert_true(in_array('DBGet', $requestActions, true), 'acceptance signalling should query tracked live alert-call channels by history id');
+assert_true(in_array('Getvar', $requestActions, true), 'acceptance signalling should validate stored channels against their live uniqueid');
 assert_true(in_array('Redirect', $requestActions, true), 'acceptance signalling should redirect already answered playback legs to the remote-accepted path');
 assert_true(in_array('Hangup', $requestActions, true), 'acceptance signalling should hang up remaining launch or ringing legs immediately');
+$targetedChannels = array_values(array_filter(array_map(static function (array $request): string {
+	return in_array($request['action'], ['Redirect', 'Hangup'], true) ? (string)($request['params']['Channel'] ?? '') : '';
+}, $astman->requests)));
+assert_true(!in_array('Local/780@from-internal-0001;2', $targetedChannels, true), 'acceptance signalling must not act on the excluded accepting attempt');
+assert_true(!in_array('Local/780@repeatcaller-alert-launch-0001;1', $targetedChannels, true), 'excluded attempts must retain their own launch-channel records and remain untouched');
+
+$astman->requests = [];
+$astman->channelUniqueids['Local/781@from-internal-0002;2'] = 'different-playback-owner';
+$astman->channelUniqueids['Local/781@repeatcaller-alert-launch-0002;1'] = 'different-launch-owner';
+$signalModule->signalIncidentAcceptedForLiveAlertCalls($parallelAcceptIncident, 1);
+$staleTargetedChannels = array_values(array_filter(array_map(static function (array $request): string {
+	return in_array($request['action'], ['Redirect', 'Hangup'], true) ? (string)($request['params']['Channel'] ?? '') : '';
+}, $astman->requests)));
+assert_same([], $staleTargetedChannels, 'a reused channel name with a different uniqueid must never be redirected or hung up from stale AstDB data');
+assert_same('playback-0002', $astman->dbValues['repeatcaller/alertcall/2/playback_uniqueid'], 'stale-reference rejection must leave AstDB ownership records untouched for their active owner');
+
+$astman->requests = [];
+$astman->channelUniqueids['Local/781@from-internal-0002;2'] = 'playback-0002';
+$astman->channelUniqueids['Local/781@repeatcaller-alert-launch-0002;1'] = 'launch-0002';
+$signalModule->signalIncidentAcceptedForLiveAlertCalls($parallelAcceptIncident, 1);
+$repeatRequestActions = array_map(static function (array $request): string {
+	return (string)$request['action'];
+}, $astman->requests);
+assert_true(in_array('Redirect', $repeatRequestActions, true) && in_array('Hangup', $repeatRequestActions, true), 'repeated acceptance signalling must remain safe after the original channel validation was restored');
 
 $lateCallbackClock = new TestClock('2026-07-13 13:49:30');
 [$lateCallbackDb, $lateCallbackProcessor] = create_alert_environment($lateCallbackClock, new FakeEmailSender(), new FakeCallSender());
@@ -2879,10 +3124,10 @@ $dbCS->prepare(
 $clockCS->now = '2026-07-13 11:05:00';
 $processorCS->run(settings());
 $acceptedAfterExpiryState = $dbCS->query("SELECT last_alert_at, reminders_sent FROM repeatcaller_incident_alert_state WHERE incident_id = {$acceptedAfterExpiry}")->fetch(PDO::FETCH_ASSOC);
-assert_same('2026-07-13 11:05:00', (string)$acceptedAfterExpiryState['last_alert_at'], 'accepted incidents should advance the checkpoint once suppression has expired and fresh activity becomes alert-eligible');
-assert_same(1, (int)$acceptedAfterExpiryState['reminders_sent'], 'accepted incidents should advance the reminder counter once suppression has expired and fresh activity becomes alert-eligible');
-assert_same(1, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'gui' AND event_type = 'reminder_1' AND stage_n = 0"), 'accepted incidents should reserve one fresh GUI reminder after suppression expires');
-assert_same(1, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'email' AND event_type = 'reminder_1' AND stage_n = 0 AND delivery_status = 'sent'"), 'accepted incidents should deliver one fresh email reminder after suppression expires');
+assert_same('2026-07-13 10:01:00', (string)$acceptedAfterExpiryState['last_alert_at'], 'accepted incidents must preserve the checkpoint after suppression expiry and fresh activity');
+assert_same(0, (int)$acceptedAfterExpiryState['reminders_sent'], 'accepted incidents must preserve the reminder counter after suppression expiry and fresh activity');
+assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'gui' AND event_type = 'reminder_1' AND stage_n = 0"), 'accepted incidents must not reserve GUI reminders after suppression expires');
+assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'email' AND event_type = 'reminder_1' AND stage_n = 0 AND delivery_status = 'sent'"), 'accepted incidents must not deliver reminder emails after suppression expires');
 assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND action_type = 'alert_call' AND event_type = 'reminder_1' AND stage_n = 0"), 'accepted incidents should not restart Alert Call activity after suppression expires');
 assert_same(0, count_history($dbCS, "incident_id = {$acceptedAfterExpiry} AND event_type = 'reminder_2'"), 'accepted incidents should not resume older reminder stages once suppression expires');
 

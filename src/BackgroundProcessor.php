@@ -485,7 +485,7 @@ final class BackgroundProcessor {
 			$withheld = DetectionEngine::isWithheldCaller($journey['caller_raw'] ?? '') && DetectionEngine::isWithheldCaller($journey['caller_clid'] ?? '');
 			$callerNormalized = $withheld
 				? 'withheld'
-				: DetectionEngine::normaliseCaller(($journey['caller_raw'] ?? '') !== '' ? (string)$journey['caller_raw'] : (string)($journey['caller_clid'] ?? ''), $defaultCountryCode);
+				: DetectionEngine::normaliseCaller(!DetectionEngine::isWithheldCaller($journey['caller_raw'] ?? '') ? (string)$journey['caller_raw'] : (string)($journey['caller_clid'] ?? ''), $defaultCountryCode);
 			if (!$withheld && ($callerNormalized === null || $callerNormalized === '')) {
 				continue;
 			}

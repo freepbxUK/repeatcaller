@@ -1,5 +1,21 @@
 # Repeat Caller User Guide
 
+## Guide Navigation
+
+- [Before You Begin](#before-you-begin)
+- [First-Time Setup](#first-time-setup)
+- [Rule Configuration](#rule-settings-explained)
+- [Repeat and Invert Detection](#repeat-mode)
+- [Suppression and Reminders](#suppression)
+- [Incidents](#understanding-incidents)
+- [Email Alerts](#receiving-email-alerts)
+- [Alert Calls](#receiving-alert-calls)
+- [Snooze and History](#snooze-monitoring)
+- [Troubleshooting](#troubleshooting)
+
+For technical installation, upgrade, signing and uninstall instructions, see
+[README.md](README.md).
+
 ## What Repeat Caller Does
 
 Repeat Caller supports two distinct detection modes:
@@ -16,14 +32,17 @@ It does not only count missed calls. Answered, busy, failed, abandoned, and othe
 Before configuring rules, confirm:
 
 - the module is installed
-- the installed module version is listed in [README.md](README.md)
+- the installed module version matches the release documentation in [README.md](README.md)
 - the Repeat Caller background job is present
 - CDR records are available
 - Inbound Routes are configured
 - FreePBX email is configured if Email alerts are required
 - Alert Call destinations and optional System Recording are available if Alert Call is required
 
-For technical requirements and install/update details, see README.md.
+This guide describes implemented operator workflows and known limitations.
+Automated contract tests provide source-level confidence but are not evidence of
+live FreePBX, Asterisk, handset, mail-relay or carrier behaviour. Use a test PBX
+for installation, Alert Call and upgrade acceptance.
 
 ## Opening Repeat Caller
 
@@ -31,16 +50,19 @@ Open:
 
 Reports > Repeat Caller
 
-Main sections:
+The page header shows the installed module version. The section navigation
+links directly to status, incidents, settings, rules and history. Main sections:
 
 - Engine Status
 - Active Incidents
+- Suppressed Incidents
 - Global Settings
-- Rules
-- Add Rule (switches to Editing Rule when editing an existing rule)
+- Rules and its Add Rule editor (which switches to Editing Rule when an
+  existing rule is opened)
 - Recent Incidents
 - Alert History
-- Run Now
+
+Run Now is available in Engine Status and does not replace the scheduled job.
 
 The top Engine Status section contains the operational controls: Enable All Rules, Disable All Rules, Snooze, Resume All Rules, and Run Now. Enable All Rules turns on the global engine and enables every non-deleted rule, while Disable All Rules turns off the global engine and disables every non-deleted rule.
 
@@ -97,8 +119,8 @@ Save the rule, place controlled test calls, then verify Active Incidents and Ale
 - Alert Reminders: reminder timing for active incidents.
 - Caller Scope: Any caller, withheld-only, or specific callers.
 - Exclude withheld callers: excludes withheld identities from this rule.
-- Caller Includes: callers to include when using specific-caller scope. Enter caller numbers separated by spaces, commas or new lines. Mixed separators are supported. Values are saved in a normalized comma-separated format.
-- Caller Excludes: callers to exclude. Enter caller numbers separated by spaces, commas or new lines. Mixed separators are supported. Values are saved in a normalized comma-separated format.
+- Caller Includes: callers to include when using specific-caller scope. Enter caller numbers separated by spaces, commas or new lines. Mixed separators are supported. Values are saved in a normalised comma-separated format.
+- Caller Excludes: callers to exclude. Enter caller numbers separated by spaces, commas or new lines. Mixed separators are supported. Values are saved in a normalised comma-separated format.
 - DID Scope: Include All DIDs or Select DIDs.
 - Inbound Routes: route selector used for DID include/exclude actions.
 - Included Routes: the exact route set when one or more routes are listed. If
@@ -122,16 +144,34 @@ Alert reminder emails also start with the FreePBX System Identifier when it is a
 - Ordered: attempts destinations in saved order, moving forward when unaccepted.
 - Keep Trying: controls whether unsuccessful destinations remain eligible later.
 - System Recording: optional recording played before generated message.
-- Caller ID managed elsewhere: enabled by default for new rules. Repeat Caller will not set the Caller ID for Alert Calls. Caller presentation is managed elsewhere, for example by Outbound Routes, trunks, another module, an SBC, or your network provider. When you tick this option, the Alert Call Caller ID field is cleared immediately, disabled, and its example placeholder disappears.
+- Caller ID managed elsewhere: enabled by default for new rules. Repeat Caller will not set the caller number for Alert Calls. External caller presentation is managed elsewhere, for example by Outbound Routes, trunks, another module, an SBC, or your network provider. When you tick this option, the Alert Call Caller ID field is cleared immediately, disabled, and its example placeholder disappears.
 - Alert Call Caller ID: sets the caller ID presented on outbound alert calls. The preferred format is international E.164 with a leading +, for example +447812345678. When the field is editable and empty, the example placeholder follows the configured Default Country Code.
 
 If you untick Caller ID managed elsewhere while Alert Call is enabled, Alert Call Caller ID becomes mandatory and the previous unsaved value is restored automatically if one was entered earlier in the session. Saving with Caller ID managed elsewhere still checked persists a blank Caller ID and permanently forgets the prior value.
 
-Internal safeguard note:
 
-- Repeat Caller marks module-originated internal Alert Call legs and excludes those marked internal legs from detection.
-- This marker does not survive an external PSTN leave-and-return path where the call re-enters as a new inbound journey.
-- Carrier rewriting and changed caller presentation may still require administrator judgement.
+For internal SIP/PJSIP destinations, Repeat Caller sets the primary caller
+name to **Repeat Caller** without creating an originating extension or extra
+caller number. Existing caller numbers and privacy settings are retained. The
+original name is restored before normal outbound caller identity processing.
+External caller identity and routing remain subject to FreePBX, trunk, provider,
+SBC, and endpoint policy; forwarding, Follow Me, mixed destinations, and custom
+dialplans may apply additional caller-presentation rules. Handsets may display
+a secondary IP address beneath the primary name.
+
+Alert Call dialplan is generated by FreePBX through the module's BMO
+integration. No custom Asterisk configuration file or administrator include is
+required. Legacy cleanup exists only to migrate earlier module-owned dialplan
+artefacts; unrelated administrator configuration must remain intact.
+
+While an answered playback leg is active, Repeat Caller stores its channel name
+and uniqueid in Asterisk DB. A playback hangup handler removes those records when
+the call terminates. Before AMI Redirect or Hangup operations act on a stored
+channel, Repeat Caller checks that the live uniqueid still matches. This prevents
+a stale channel-name reference from affecting an unrelated call. Module-originated
+local Alert Call legs are also marked and excluded from inbound detection; that
+marker does not survive a call leaving through a carrier and re-entering as a
+new journey. Carriers may rewrite caller presentation.
 
 In the current editor layout, Email Recipients is positioned directly above the
 Save Rule action row.
@@ -393,6 +433,15 @@ a separate event: if suppression has not yet expired it is blocked and recorded
 in Suppressed Incidents; if suppression has already expired the new episode
 creates a new incident and follows the normal alert process.
 
+The same notification-stopping behaviour applies to telephone acceptance.
+No later GUI, email, or Alert Call reminder is generated for the accepted
+incident, even with suppression set to 0 or after suppression expires.
+Outstanding email attempts are marked failed with the detail
+`cancelled after incident accepted`; delivered history is retained. Work is
+rechecked before delivery, but a message already handed to the mailer cannot
+be recalled. Acceptance does not block initial alerts for a new incident after
+observed clearing and rearming.
+
 Accepted incidents appear in Suppressed Incidents only when a fresh qualifying
 attempt is blocked during still-active suppression after the monitor has first
 observed a clear in the previous threshold condition.
@@ -544,12 +593,6 @@ flow.
 - Acceptance cancels pending future attempts and late callbacks cannot restart escalation.
 - No same-recipient rapid retry loop occurs within one reminder point.
 
-Future improvement under consideration:
-
-- A configurable Alert Call ring timeout may be introduced in a future minor
-	release so administrators can tune this behaviour to their routing policy
-	while retaining bounded fail-safe protection.
-
 ## Snooze Monitoring
 
 Snooze Monitoring is global.
@@ -607,23 +650,44 @@ Use Run Now to trigger the normal monitor process immediately.
 
 ## Practical Examples
 
-1. Repeated sales enquiry
+### Repeated Sales Enquiry
+
 - Repeat mode
 - 3 calls within 10 minutes
 - GUI enabled, Email optional
 
-2. Priority support caller
+### Priority Support Caller
+
 - Specific caller list
 - 2 calls within 5 minutes
 - Alert Call and Email enabled
 
-3. Repeated calls to one department
+### Repeated Calls to One Department
+
 - Selected inbound route scope
 - Same caller tracked separately from other routes when route-aware identity applies
 
-4. Expected-call monitoring
+### Expected-call Monitoring
+
 - Invert mode
 - Fewer than the expected number of calls during a completed window
+
+## Updating and Uninstalling Safely
+
+For an installed release, use Module Admin's Upgrade operation. Do not uninstall
+before upgrading: uninstall removes Repeat Caller rules, settings, incidents,
+alerts and internal state. Create a restorable configuration and database backup
+before changing the installation source.
+
+Version 1.2.0 uses BMO-generated Alert Call contexts. During migration, Repeat
+Caller inspects and removes only its exact legacy include block. An unmanaged
+reference to the legacy fragment causes cleanup to stop; resolve that reference
+and retry rather than deleting administrator dialplan content.
+
+Uninstall is for decommissioning, not updating. It runs the database, job, AGI
+and legacy-dialplan cleanup hooks; Module Admin's later Remove action deletes
+only the remaining module files. Follow the full procedure and verification
+commands in [README.md](README.md#uninstalling).
 
 ## Troubleshooting
 

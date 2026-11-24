@@ -903,6 +903,87 @@ try {
 	$reconciledHistory = $repo->loadSuppressedIncidentHistory();
 	assert_same(1, count($reconciledHistory), 'rule-save reconciliation should preserve suppression-history rows');
 	assert_same('2026-07-13 09:57:00', (string)$reconciledHistory[0]['cleared_at'], 'rule-save reconciliation should mark the active suppression-history row as cleared when suppression is disabled');
+	$acceptedReconcileRuleId = $repo->saveRule([
+		'name' => 'Accepted Suppression Reconcile Rule',
+		'enabled' => 1,
+		'email_enabled' => 0,
+		'alert_call_enabled' => 0,
+		'alert_call_destinations' => '',
+		'alert_call_strategy' => 'ringall',
+		'alert_call_keep_trying' => 1,
+		'alert_call_recording_id' => null,
+		'mode' => 'repeat',
+		'threshold_count' => 2,
+		'observation_window_minutes' => 60,
+		'caller_mode' => 'any',
+		'exclude_withheld' => 0,
+		'did_scope_mode' => 'all',
+		'alert_reminder_mode_override' => null,
+		'suppression_minutes_override' => 30,
+		'schedules' => [],
+		'callers' => [],
+		'dids' => [],
+	], '2026-07-13 10:00:00');
+	$acceptedReconcileSubject = 'accepted-reconcile-subject';
+	$acceptedReconcileIncidentId = $repo->createIncident([
+		'rule_id' => $acceptedReconcileRuleId,
+		'subject_key' => $acceptedReconcileSubject,
+		'subject_label' => $acceptedReconcileSubject,
+		'caller_normalized' => $acceptedReconcileSubject,
+		'caller_display' => $acceptedReconcileSubject,
+		'mode' => 'repeat',
+		'first_matched_at' => '2026-07-13 10:00:00',
+		'last_matched_at' => '2026-07-13 10:00:00',
+		'matched_call_count' => 2,
+		'state' => 'active',
+		'suppression_expires_at' => '2026-07-13 10:30:00',
+		'created_at' => '2026-07-13 10:00:00',
+		'updated_at' => '2026-07-13 10:00:00',
+	]);
+	$repo->saveSubjectState($acceptedReconcileRuleId, $acceptedReconcileSubject, [
+		'active_incident_id' => $acceptedReconcileIncidentId,
+		'suppression_expires_at' => '2026-07-13 10:30:00',
+		'updated_at' => '2026-07-13 10:00:00',
+	]);
+	assert_true($repo->acceptActiveIncident($acceptedReconcileIncidentId, 'tester', '2026-07-13 10:01:00'), 'accepted suppression reconciliation fixture should be accepted');
+	$acceptedReconcileBasePayload = [
+		'id' => $acceptedReconcileRuleId,
+		'name' => 'Accepted Suppression Reconcile Rule',
+		'enabled' => 1,
+		'email_enabled' => 0,
+		'alert_call_enabled' => 0,
+		'alert_call_destinations' => '',
+		'alert_call_strategy' => 'ringall',
+		'alert_call_keep_trying' => 1,
+		'alert_call_recording_id' => null,
+		'mode' => 'repeat',
+		'threshold_count' => 2,
+		'observation_window_minutes' => 60,
+		'caller_mode' => 'any',
+		'exclude_withheld' => 0,
+		'did_scope_mode' => 'all',
+		'alert_reminder_mode_override' => null,
+		'schedules' => [],
+		'callers' => [],
+		'dids' => [],
+	];
+	$repo->saveRule($acceptedReconcileBasePayload + ['suppression_minutes_override' => 0], '2026-07-13 10:02:00');
+	$acceptedAfterDisable = $db->query('SELECT state, active_subject_key, suppression_expires_at FROM repeatcaller_incidents WHERE id = ' . (int)$acceptedReconcileIncidentId)->fetch(PDO::FETCH_ASSOC);
+	assert_same('accepted', (string)$acceptedAfterDisable['state'], 'disabling suppression must not reactivate an accepted incident');
+	assert_true((string)$acceptedAfterDisable['active_subject_key'] !== '', 'disabling suppression must preserve accepted incident subject linkage');
+	assert_same(null, $acceptedAfterDisable['suppression_expires_at'], 'disabling suppression may clear the accepted incident suppression expiry');
+	assert_same($acceptedReconcileIncidentId, (int)$repo->loadSubjectState($acceptedReconcileRuleId, $acceptedReconcileSubject)['active_incident_id'], 'disabling suppression must preserve the accepted incident subject-state link');
+	$repo->saveRule($acceptedReconcileBasePayload + ['suppression_minutes_override' => 60], '2026-07-13 10:03:00');
+	$acceptedAfterDurationChange = $db->query('SELECT state, active_subject_key, suppression_expires_at FROM repeatcaller_incidents WHERE id = ' . (int)$acceptedReconcileIncidentId)->fetch(PDO::FETCH_ASSOC);
+	assert_same('accepted', (string)$acceptedAfterDurationChange['state'], 'changing suppression duration must not suppress or reactivate an accepted incident');
+	assert_true((string)$acceptedAfterDurationChange['active_subject_key'] !== '', 'changing suppression duration must preserve accepted incident subject linkage');
+	assert_same('2026-07-13 11:00:00', (string)$acceptedAfterDurationChange['suppression_expires_at'], 'changing suppression duration must reconcile expiry from original incident creation');
+	assert_same($acceptedReconcileIncidentId, (int)$repo->loadSubjectState($acceptedReconcileRuleId, $acceptedReconcileSubject)['active_incident_id'], 'changing suppression duration must preserve the accepted incident subject-state link');
+	assert_true(is_array($repo->loadTrackedIncident($acceptedReconcileRuleId, $acceptedReconcileSubject)), 'accepted incident must remain tracked after suppression reconciliation');
+	$repo->markConditionCleared($acceptedReconcileRuleId, $acceptedReconcileSubject, '2026-07-13 10:10:00');
+	$acceptedAfterClear = $db->query('SELECT state, cleared_at FROM repeatcaller_incidents WHERE id = ' . (int)$acceptedReconcileIncidentId)->fetch(PDO::FETCH_ASSOC);
+	assert_same('closed', (string)$acceptedAfterClear['state'], 'observed clearing must still close an accepted incident after suppression reconciliation');
+	assert_same('2026-07-13 10:10:00', (string)$acceptedAfterClear['cleared_at'], 'observed clearing timestamp must be retained after suppression reconciliation');
 
 	$secondReconcileRuleId = $repo->saveRule([
 		'name' => 'Suppression Reconcile Other Rule',

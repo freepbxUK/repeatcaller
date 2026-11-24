@@ -275,6 +275,38 @@ function make_db(): PDO {
 	return $db;
 }
 
+$manualDb = make_db();
+FreePBX::setDatabase($manualDb);
+$manualDb->sqliteCreateFunction('GET_LOCK', static function ($name, $timeout): int { return 1; });
+$manualDb->sqliteCreateFunction('RELEASE_LOCK', static function ($name): int { return 1; });
+$manualDb->sqliteCreateFunction('NOW', static function (): string { return date('Y-m-d H:i:s'); });
+$manualController = new \FreePBX\modules\Repeatcaller(new stdClass());
+$manualMethod = new ReflectionMethod($manualController, 'rcHandleRunMonitor');
+$manualMethod->setAccessible(true);
+$manualDisabled = $manualMethod->invoke($manualController);
+assert_same(false, $manualDisabled['ran'], 'Run Now must not claim execution while monitoring is disabled');
+assert_true(strpos($manualDisabled['message'], 'disabled') !== false, 'Run Now must explain why a disabled monitor did not run');
+$manualDb->exec('CREATE TABLE cdr (calldate TEXT, linkedid TEXT, uniqueid TEXT, src TEXT, clid TEXT, did TEXT, dst TEXT, dcontext TEXT)');
+$manualDb->exec('CREATE TABLE repeatcaller_seen_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, call_identity TEXT UNIQUE, identity_type TEXT, fingerprint TEXT, linkedid TEXT, uniqueid TEXT, caller_raw TEXT, caller_normalized TEXT, inbound_route_key TEXT, did_value TEXT, call_started_at TEXT, call_completed_at TEXT, disposition TEXT, source_context TEXT, processed_at TEXT)');
+$manualDb->exec('CREATE TABLE repeatcaller_incident_alert_state (id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER UNIQUE, rule_id INTEGER, alert_reminder_mode TEXT, initial_sent_at TEXT, last_alert_at TEXT, reminders_sent INTEGER, next_due_at TEXT, created_at TEXT, updated_at TEXT)');
+$manualDb->prepare('INSERT INTO repeatcaller_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)')->execute(['enabled', '1', date('Y-m-d H:i:s')]);
+$manualDb->exec("INSERT INTO incoming VALUES ('18005550001', '', 'Anonymous test route')");
+$manualDb->exec("INSERT INTO repeatcaller_rules (name, enabled, mode, threshold_count, observation_window_minutes, caller_mode, did_scope_mode, alert_reminder_mode_override, suppression_minutes_override) VALUES ('Run Now anonymous', 1, 'repeat', 2, 5, 'any', 'all', 'never', 0)");
+$manualDb->exec("INSERT INTO repeatcaller_rule_schedules (rule_id, day_of_week, start_time, end_time) VALUES (1, -1, '00:00:00', '24:00:00')");
+foreach ([['anonymous', '"Anonymous" <anonymous>'], ['', 'restricted']] as $manualIndex => [$manualSource, $manualClid]) {
+	$manualDb->prepare('INSERT INTO cdr VALUES (?, ?, ?, ?, ?, ?, ?, ?)')->execute([date('Y-m-d H:i:s', time() - 120 + 60 * $manualIndex), 'manual-' . $manualIndex, 'manual-' . $manualIndex, $manualSource, $manualClid, '18005550001', '18005550001', 'from-trunk']);
+}
+$manualResult = $manualMethod->invoke($manualController);
+assert_same(true, $manualResult['status'], 'Run Now must successfully execute the normal monitor pipeline');
+assert_same(true, $manualResult['ran'], 'Run Now must report actual execution');
+assert_same(2, $manualResult['runtimeSummary']['new_journeys'], 'Run Now must include both anonymous CDR journeys');
+assert_same(1, $manualResult['runtimeSummary']['incidents_created'], 'Run Now must create the qualifying anonymous incident');
+assert_same(1, $manualResult['alertSummary']['initial_events'], 'Run Now must generate the normal initial notification event');
+assert_true(strpos($manualResult['message'], '2 inbound journeys') !== false && strpos($manualResult['message'], '1 incidents created') !== false, 'Run Now feedback must expose useful execution counts');
+$manualAgain = $manualMethod->invoke($manualController);
+assert_same(0, $manualAgain['runtimeSummary']['new_journeys'], 'Run Now must preserve deduplication rather than replay old calls');
+assert_same(0, $manualAgain['alertSummary']['initial_events'], 'Run Now must not duplicate the original initial notification');
+
 $db = make_db();
 $dbForController = $db;
 FreePBX::setDatabase($dbForController);
@@ -3596,10 +3628,12 @@ assert_true(strpos($cssSource, '.repeatcaller .rc-rule-status:not([disabled]),')
 assert_true(strpos($cssSource, '.repeatcaller .form-control[disabled]:focus,') !== false && strpos($cssSource, '.repeatcaller .form-control.rc-control-disabled:focus,') !== false, 'disabled form controls should suppress focus ring and preserve muted disabled visuals');
 
 $rootPos = strpos($viewSource, '<div class="repeatcaller"');
-$containerPos = strpos($viewSource, '<div class="container-fluid repeatcaller-container">');
+$containerPos = strpos($viewSource, '<div class="repeatcaller-container">');
 $firstRowPos = strpos($viewSource, '<div class="row">');
-assert_true($rootPos !== false && $containerPos !== false && $firstRowPos !== false && $rootPos < $containerPos && $containerPos < $firstRowPos, 'repeatcaller root must wrap page rows in a module-owned container-fluid');
-assert_true((bool)preg_match('/<div class="container-fluid repeatcaller-container">[\s\S]*<div class="row rc-section">[\s\S]*Engine Status[\s\S]*rc-run-now[\s\S]*<div class="row rc-section">[\s\S]*Active Incidents[\s\S]*<div class="row rc-section">[\s\S]*Suppressed Incidents[\s\S]*<div class="row rc-section">[\s\S]*Global Settings[\s\S]*<div class="row rc-section">[\s\S]*Rules[\s\S]*<div class="row rc-section">[\s\S]*Recent Incidents[\s\S]*<div class="row rc-section">[\s\S]*Alert History/s', $viewSource), 'Engine Status should contain Run Now before the main incident and rule sections, with Suppressed Incidents directly under Active Incidents');
+assert_true($rootPos !== false && $containerPos !== false && $firstRowPos !== false && $rootPos < $containerPos && $containerPos < $firstRowPos, 'repeatcaller root must wrap page rows in a module-owned container');
+assert_true((bool)preg_match('/<div class="row">\s*<div class="col-sm-12 rc-page-header-inner">\s*<header class="rc-page-header">[\s\S]*?<\/header>\s*<\/div>\s*<\/div>\s*<nav class="rc-section-nav"/', $viewSource), 'page header card must sit inside a Bootstrap column so its card boundaries match panels while navigation shares the container boundary');
+assert_true(strpos($viewSource, '<a class="rc-skip-link" href="#rc-engine">') < $containerPos && strpos($viewSource, '<nav class="rc-section-nav"') !== false, 'accessible skip link and section navigation must remain available');
+assert_true((bool)preg_match('/<div class="repeatcaller-container">[\s\S]*<div class="row rc-section">[\s\S]*Engine Status[\s\S]*rc-run-now[\s\S]*<div class="row rc-section">[\s\S]*Active Incidents[\s\S]*<div class="row rc-section">[\s\S]*Suppressed Incidents[\s\S]*<div class="row rc-section">[\s\S]*Global Settings[\s\S]*<div class="row rc-section">[\s\S]*Rules[\s\S]*<div class="row rc-section">[\s\S]*Recent Incidents[\s\S]*<div class="row rc-section">[\s\S]*Alert History/s', $viewSource), 'Engine Status should contain Run Now before the main incident and rule sections, with Suppressed Incidents directly under Active Incidents');
 assert_true((bool)preg_match('/<div class="table-responsive">\s*<table class="table table-striped table-condensed" id="rc-rules-table">/s', $viewSource), 'rules table must be directly contained by its own table-responsive wrapper');
 assert_true(strpos($viewSource, '<th>ID</th><th><?php echo _(\'First\'); ?></th><th><?php echo _(\'Rule\'); ?></th><th><?php echo _(\'Mode\'); ?></th><th><?php echo _(\'Subject\'); ?></th>') !== false, 'active incidents columns should keep the shared ID, time, rule, mode, subject prefix');
 assert_true((bool)preg_match('/<div class="table-responsive">\s*<table class="table table-striped table-condensed" id="rc-active-incidents-table">/s', $viewSource), 'active incidents table must be directly contained by its own table-responsive wrapper');
@@ -3608,10 +3642,12 @@ assert_true((bool)preg_match('/<div class="table-responsive">\s*<table class="ta
 assert_true(strpos($viewSource, '<th><?php echo _(\'ID\'); ?></th><th><?php echo _(\'Time\'); ?></th><th><?php echo _(\'Rule\'); ?></th><th><?php echo _(\'Mode\'); ?></th><th><?php echo _(\'Subject\'); ?></th>') !== false, 'alert history columns should keep the shared ID, time, rule, mode, subject prefix');
 assert_true((bool)preg_match('/<div class="table-responsive">\s*<table class="table table-striped table-condensed" id="rc-alert-history-table">/s', $viewSource), 'alert history table must be directly contained by its own table-responsive wrapper');
 assert_true(strpos($viewSource, '<th><?php echo _(\'Time\'); ?></th><th><?php echo _(\'Rule\'); ?></th><th><?php echo _(\'Mode\'); ?></th><th><?php echo _(\'Subject\'); ?></th>') !== false, 'suppressed incidents columns should keep the time, rule, mode, subject prefix');
-assert_true((bool)preg_match('/\.repeatcaller,\s*\.repeatcaller \.repeatcaller-container,\s*\.repeatcaller \.row,\s*\.repeatcaller \[class\*="col-"\],\s*\.repeatcaller \.panel,\s*\.repeatcaller \.panel-body \{\s*box-sizing: border-box;\s*max-width: 100%;\s*min-width: 0;\s*\}/s', $cssSource), 'root, container, row, column, and panel elements must share explicit border-box containment');
+assert_true((bool)preg_match('/\.repeatcaller,\s*\.repeatcaller \.repeatcaller-container,\s*\.repeatcaller \[class\*="col-"\],\s*\.repeatcaller \.panel,\s*\.repeatcaller \.panel-body \{\s*box-sizing: border-box;\s*max-width: 100%;\s*min-width: 0;\s*\}/s', $cssSource), 'root, container, column, and panel elements must share explicit border-box containment without clamping Bootstrap rows');
+assert_true(!preg_match('/\.repeatcaller,\s*\.repeatcaller \.repeatcaller-container,\s*\.repeatcaller \.row,/', $cssSource), 'Bootstrap rows must retain their negative gutters so panels align with container-wide navigation');
 assert_true((bool)preg_match('/\.repeatcaller \.repeatcaller-container \{\s*width: 100%;\s*\}/s', $cssSource), 'repeatcaller container must occupy the available module width');
-assert_true((bool)preg_match('/body:has\(\.repeatcaller\) #page_body\.default-page \{\s*display: block !important;\s*width: 100% !important;\s*max-width: 100% !important;\s*\}/s', $cssSource), 'FreePBX page_body table layout override must be scoped to pages containing Repeat Caller');
-assert_true((bool)preg_match('/\.repeatcaller \.table-responsive \{[\s\S]*overflow-x: auto;[\s\S]*overflow-y: hidden;[\s\S]*-webkit-overflow-scrolling: touch;/s', $cssSource), 'table-responsive wrapper must use local horizontal overflow');
+assert_true((bool)preg_match('/body:has\(\.repeatcaller\) #page_body \{[\s\S]*display: block !important;[\s\S]*width: 100% !important;[\s\S]*max-width: 100% !important;[\s\S]*min-width: 0 !important;[\s\S]*box-sizing: border-box;/s', $cssSource), 'FreePBX page_body sizing override must not depend on a particular page_body class and must be scoped to Repeat Caller pages');
+assert_true((bool)preg_match('/body:has\(\.repeatcaller\) #page,\s*body:has\(\.repeatcaller\) #page_body,\s*body:has\(\.repeatcaller\) #page_body > \.container-fluid,\s*body:has\(\.repeatcaller\) #page_body > \.container-fluid > \.display \{\s*box-sizing: border-box;\s*max-width: 100%;\s*min-width: 0;\s*\}/s', $cssSource), 'FreePBX shell ancestors and the module page wrapper must be allowed to shrink only on Repeat Caller pages');
+assert_true((bool)preg_match('/\.repeatcaller \.table-responsive \{[\s\S]*max-width: 100%;[\s\S]*min-width: 0;[\s\S]*overflow-x: auto;[\s\S]*overflow-y: hidden;[\s\S]*-webkit-overflow-scrolling: touch;/s', $cssSource), 'table-responsive wrappers must shrink within panels and scroll horizontally themselves');
 assert_true((bool)preg_match('/#rc-rules-table \{[\s\S]*min-width: 1050px;/s', $cssSource), 'rules table should retain a readable minimum width');
 assert_true((bool)preg_match('/#rc-active-incidents-table \{[\s\S]*min-width: 1200px;/s', $cssSource), 'active incidents table should retain a readable minimum width');
 assert_true((bool)preg_match('/#rc-recent-incidents-table \{[\s\S]*min-width: 950px;/s', $cssSource), 'recent incidents table should retain a readable minimum width');
@@ -3626,6 +3662,7 @@ assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcall
 assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcaller \.form-group \{[\s\S]*margin-bottom: 10px;/s', $cssSource), 'mobile layout should reduce form-group spacing');
 assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcaller label \{[\s\S]*margin-bottom: 3px;/s', $cssSource), 'mobile layout should reduce label spacing');
 assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcaller \.help-block \{[\s\S]*margin-top: 3px;[\s\S]*margin-bottom: 4px;/s', $cssSource), 'mobile layout should reduce help-block spacing');
+assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcaller \.input-group \.form-control \{\s*width: 1%;\s*\}/s', $cssSource), 'mobile input-group fields should preserve Bootstrap table-cell sizing beside their buttons');
 assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcaller \.btn \{[\s\S]*min-height: 44px;[\s\S]*padding: 8px 10px;[\s\S]*white-space: normal;/s', $cssSource), 'mobile buttons should stay touch-friendly while wrapping cleanly');
 assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcaller \.btn-group,[\s\S]*\.repeatcaller \.btn-toolbar \{[\s\S]*display: flex;[\s\S]*flex-wrap: wrap;[\s\S]*width: 100%;/s', $cssSource), 'mobile button groups should wrap at full width');
 assert_true((bool)preg_match('/@media \(max-width: 767px\) \{[\s\S]*\.repeatcaller \.alert,[\s\S]*\.repeatcaller \.rc-engine-banner \{[\s\S]*padding: 8px 10px;[\s\S]*margin-bottom: 10px;/s', $cssSource), 'mobile alert and status boxes should use denser spacing');
