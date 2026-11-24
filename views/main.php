@@ -49,7 +49,7 @@ $assetVer = max(
 
 <div class="repeatcaller" data-csrf-token="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
 	<input type="hidden" name="token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
-	<div class="container-fluid repeatcaller-container">
+	<div class="repeatcaller-container">
 
 	<div class="row">
 		<div class="col-sm-12">
