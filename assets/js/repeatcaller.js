@@ -2802,11 +2802,11 @@
 		var isAllDay = allDayOverride === true || (String(start || '') === '00:00' && String(end || '') === '24:00');
 		var daySel = '<select class="form-control input-sm rc-schedule-day">'
 			+ '<option value="-1">Any</option><option value="0">Sun</option><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option></select>';
-		var $daySelect = $(daySel).val(String(day === undefined ? 1 : day));
-		var $startHour = $('<select class="form-control input-sm rc-schedule-start-hour">').html(buildHourOptions(true).join(''));
-		var $startMinute = $('<select class="form-control input-sm rc-schedule-start-minute">').html(buildMinuteOptions().join(''));
-		var $endHour = $('<select class="form-control input-sm rc-schedule-end-hour">').html(buildHourOptions(false).join(''));
-		var $endMinute = $('<select class="form-control input-sm rc-schedule-end-minute">').html(buildMinuteOptions().join(''));
+		var $daySelect = $(daySel).attr('aria-label', 'Day').val(String(day === undefined ? 1 : day));
+		var $startHour = $('<select class="form-control input-sm rc-schedule-start-hour">').attr('aria-label', 'Start hour').html(buildHourOptions(true).join(''));
+		var $startMinute = $('<select class="form-control input-sm rc-schedule-start-minute">').attr('aria-label', 'Start minute').html(buildMinuteOptions().join(''));
+		var $endHour = $('<select class="form-control input-sm rc-schedule-end-hour">').attr('aria-label', 'End hour').html(buildHourOptions(false).join(''));
+		var $endMinute = $('<select class="form-control input-sm rc-schedule-end-minute">').attr('aria-label', 'End minute').html(buildMinuteOptions().join(''));
 		var boundedStart = isValidBoundedTimeValue(start) ? String(start) : '09:00';
 		var boundedEnd = isValidBoundedTimeValue(end) ? String(end) : '17:00';
 		var startParts = splitBoundedTime(boundedStart, '09:00');
@@ -2818,7 +2818,7 @@
 		$row.append($('<td/>').append($daySelect));
 		$row.append($('<td/>').append($startHour).append(' ').append($startMinute));
 		$row.append($('<td/>').append($endHour).append(' ').append($endMinute));
-		$row.append($('<td/>').append($('<button type="button" class="btn btn-xs btn-danger rc-schedule-remove">x</button>').on('click', function () {
+		$row.append($('<td/>').append($('<button type="button" class="btn btn-xs btn-danger rc-schedule-remove" aria-label="Remove schedule">x</button>').on('click', function () {
 			$row.remove();
 			normalizeScheduleEditorState();
 			updateTableRowBatching('#rc-schedule-table');

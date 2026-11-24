@@ -49,19 +49,36 @@ $assetVer = max(
 
 <div class="repeatcaller" data-csrf-token="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
 	<input type="hidden" name="token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
-	<div class="repeatcaller-container">
-
+        <a class="rc-skip-link" href="#rc-engine"><?php echo _('Skip to monitoring controls'); ?></a>
+        <div class="repeatcaller-container">
 	<div class="row">
-		<div class="col-sm-12">
-			<h1><?php echo _('Repeat Caller'); ?> <small class="text-muted">v<?php echo htmlspecialchars((string)$moduleVersion, ENT_QUOTES, 'UTF-8'); ?></small></h1>
-			<p><?php echo _('Rules support repeat and invert detection modes, caller and DID scoping, schedule windows, repeat-notification modes, and suppression controls. The admin page presents active and historical lifecycle views so operators can review incidents, acceptances, alerts, and suppression decisions in one place.'); ?></p>
-			<div id="rc-message" class="alert" style="display:none;"></div>
-		</div>
+		<header class="col-sm-12 rc-page-header-inner rc-page-header">
+			<div class="rc-page-identity">
+				<div class="rc-page-copy">
+					<p class="rc-page-eyebrow"><?php echo _('FreePBX incident monitoring'); ?></p>
+					<h1><?php echo _('Repeat Caller'); ?></h1>
+					<p class="rc-page-lead"><?php echo _('Detect repeat or missing call activity, review incidents, and coordinate response from one operational workspace.'); ?></p>
+				</div>
+			</div>
+			<div class="rc-page-meta" aria-label="<?php echo htmlspecialchars(_('Module information'), ENT_QUOTES, 'UTF-8'); ?>">
+				<span class="rc-version-label"><?php echo _('Module version'); ?></span>
+				<strong>v<?php echo htmlspecialchars((string)$moduleVersion, ENT_QUOTES, 'UTF-8'); ?></strong>
+			</div>
+			<div id="rc-message" class="alert" role="status" aria-live="polite" style="display:none;"></div>
+		</header>
 	</div>
+
+	<nav class="rc-section-nav" aria-label="<?php echo htmlspecialchars(_('Repeat Caller sections'), ENT_QUOTES, 'UTF-8'); ?>">
+		<a href="#rc-engine"><span class="fa fa-dashboard" aria-hidden="true"></span><?php echo _('Status'); ?></a>
+		<a href="#rc-active-incidents"><span class="fa fa-bell" aria-hidden="true"></span><?php echo _('Incidents'); ?></a>
+		<a href="#rc-global-settings"><span class="fa fa-cog" aria-hidden="true"></span><?php echo _('Settings'); ?></a>
+		<a href="#rc-rules"><span class="fa fa-sliders" aria-hidden="true"></span><?php echo _('Rules'); ?></a>
+		<a href="#rc-recent-incidents"><span class="fa fa-history" aria-hidden="true"></span><?php echo _('History'); ?></a>
+	</nav>
 
 	<div class="row rc-section">
 		<div class="col-sm-12">
-			<div class="panel panel-default">
+			<div class="panel panel-default" id="rc-engine">
 				<div class="panel-heading"><h3 class="panel-title"><?php echo _('Engine Status'); ?></h3></div>
 				<div class="panel-body">
 					<div class="rc-engine-banner" id="rc-engine-banner"></div>
@@ -92,21 +109,22 @@ $assetVer = max(
 	</div>
 
 	<div class="row rc-section">
-		<div class="col-sm-12"><div class="panel panel-default"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Active Incidents'); ?></h3></div><div class="panel-body"><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-active-incidents-table"><thead><tr><th>ID</th><th><?php echo _('First'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Caller'); ?></th><th><?php echo _('Last'); ?></th><th><?php echo _('Count'); ?></th><th><?php echo _('Threshold'); ?></th><th><?php echo _('Window'); ?></th><th><?php echo _('Status'); ?></th><th><?php echo _('Updated'); ?></th><th><?php echo _('Action'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
+		<div class="col-sm-12"><div class="panel panel-default" id="rc-active-incidents"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Active Incidents'); ?></h3></div><div class="panel-body"><p class="help-block rc-table-scroll-help"><?php echo _('Scroll horizontally to view all columns.'); ?></p><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-active-incidents-table"><thead><tr><th>ID</th><th><?php echo _('First'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Caller'); ?></th><th><?php echo _('Last'); ?></th><th><?php echo _('Count'); ?></th><th><?php echo _('Threshold'); ?></th><th><?php echo _('Window'); ?></th><th><?php echo _('Status'); ?></th><th><?php echo _('Updated'); ?></th><th><?php echo _('Action'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
 	</div>
 
 	<div class="row rc-section">
-			<div class="col-sm-12"><div class="panel panel-default"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Suppressed Incidents'); ?></h3></div><div class="panel-body"><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-suppressed-incidents-table"><thead><tr><th><?php echo _('Time'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Count'); ?></th><th><?php echo _('Threshold / Window'); ?></th><th><?php echo _('Suppressed Until'); ?></th><th><?php echo _('Cleared'); ?></th><th><?php echo _('Reason'); ?></th><th><?php echo _('Related Incident'); ?></th><th><?php echo _('Action'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
+			<div class="col-sm-12"><div class="panel panel-default" id="rc-suppressed-incidents"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Suppressed Incidents'); ?></h3></div><div class="panel-body"><p class="help-block rc-table-scroll-help"><?php echo _('Scroll horizontally to view all columns.'); ?></p><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-suppressed-incidents-table"><thead><tr><th><?php echo _('Time'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Count'); ?></th><th><?php echo _('Threshold / Window'); ?></th><th><?php echo _('Suppressed Until'); ?></th><th><?php echo _('Cleared'); ?></th><th><?php echo _('Reason'); ?></th><th><?php echo _('Related Incident'); ?></th><th><?php echo _('Action'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
 	</div>
 
 	<div class="row rc-section">
 		<div class="col-sm-12">
-			<div class="panel panel-default">
+			<div class="panel panel-default" id="rc-global-settings">
 				<div class="panel-heading"><h3 class="panel-title"><?php echo _('Global Settings'); ?></h3></div>
 				<div class="panel-body">
 					<?php $activeAlertCallLanguage = array_values(array_filter((array)($alertCallLanguageSupport['rows'] ?? []), function (array $row): bool { return !empty($row['active']); })); ?>
 					<p><strong><?php echo _('Active FreePBX Language'); ?>:</strong> <span id="rc-active-freepbx-language"><?php echo htmlspecialchars((string)($activeAlertCallLanguage[0]['language'] ?? _('Unknown')), ENT_QUOTES, 'UTF-8'); ?></span> <button type="button" class="btn btn-xs btn-default" id="rc-refresh-alert-call-language" title="<?php echo htmlspecialchars(_('Refresh the detected language status.'), ENT_QUOTES, 'UTF-8'); ?>"><span class="fa fa-refresh" aria-hidden="true"></span> <span class="rc-refresh-label"><?php echo _('Refresh'); ?></span></button></p>
 					<p class="help-block"><?php echo _('Alert Call languages are based on installed audio files that can provide the required prompts, currently found under <code>/var/lib/asterisk/sounds</code>. The status shows whether native audio is available or whether fallback language will be used.'); ?></p>
+					<p class="help-block rc-table-scroll-help"><?php echo _('Scroll horizontally to view all columns.'); ?></p>
 					<div class="table-responsive">
 						<table class="table table-condensed" id="rc-alert-call-language-table">
 							<thead><tr><th><?php echo _('Language'); ?></th><th><?php echo _('Locale'); ?></th><th title="<?php echo htmlspecialchars(_('Shows only the audio codecs available for the required Alert Call prompts, not all codecs found in the language directory.'), ENT_QUOTES, 'UTF-8'); ?>"><?php echo _('Available Codecs'); ?></th><th><?php echo _('Status'); ?></th><th><?php echo _('Alert Call Language'); ?></th><th><?php echo _('Sample'); ?></th></tr></thead>
@@ -179,9 +197,10 @@ $assetVer = max(
 
 	<div class="row rc-section">
 		<div class="col-sm-12">
-			<div class="panel panel-default">
+			<div class="panel panel-default" id="rc-rules">
 				<div class="panel-heading"><h3 class="panel-title"><?php echo _('Rules'); ?></h3></div>
 				<div class="panel-body">
+					<p class="help-block rc-table-scroll-help"><?php echo _('Scroll horizontally to view all columns.'); ?></p>
 					<div class="table-responsive">
 						<table class="table table-striped table-condensed" id="rc-rules-table">
 							<thead><tr><th><?php echo _('Name'); ?></th><th><?php echo _('Enabled'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Threshold/Window'); ?></th><th><?php echo _('Caller Scope'); ?></th><th><?php echo _('DID Scope'); ?></th><th><?php echo _('Schedule'); ?></th><th><?php echo _('Actions'); ?></th><th><?php echo _('Recording'); ?></th><th><?php echo _('Repeat'); ?></th><th><?php echo _('Suppression'); ?></th><th><?php echo _('Active Incidents'); ?></th><th><?php echo _('Controls'); ?></th></tr></thead>
@@ -222,11 +241,11 @@ $assetVer = max(
 	</div>
 
 	<div class="row rc-section">
-		<div class="col-sm-12"><div class="panel panel-default"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Recent Incidents'); ?></h3></div><div class="panel-body"><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-recent-incidents-table"><thead><tr><th>ID</th><th><?php echo _('Created'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Status'); ?></th><th><?php echo _('Accepted By'); ?></th><th><?php echo _('Suppression Expires'); ?></th><th><?php echo _('Updated'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
+		<div class="col-sm-12"><div class="panel panel-default" id="rc-recent-incidents"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Recent Incidents'); ?></h3></div><div class="panel-body"><p class="help-block rc-table-scroll-help"><?php echo _('Scroll horizontally to view all columns.'); ?></p><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-recent-incidents-table"><thead><tr><th>ID</th><th><?php echo _('Created'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Status'); ?></th><th><?php echo _('Accepted By'); ?></th><th><?php echo _('Suppression Expires'); ?></th><th><?php echo _('Updated'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
 	</div>
 
 	<div class="row rc-section">
-		<div class="col-sm-12"><div class="panel panel-default"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Alert History'); ?></h3></div><div class="panel-body"><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-alert-history-table"><thead><tr><th><?php echo _('ID'); ?></th><th><?php echo _('Time'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Event'); ?></th><th><?php echo _('Action'); ?></th><th><?php echo _('Status'); ?></th><th><?php echo _('Stage'); ?></th><th><?php echo _('Success'); ?></th><th><?php echo _('Failure Detail'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
+		<div class="col-sm-12"><div class="panel panel-default" id="rc-alert-history"><div class="panel-heading"><h3 class="panel-title"><?php echo _('Alert History'); ?></h3></div><div class="panel-body"><p class="help-block rc-table-scroll-help"><?php echo _('Scroll horizontally to view all columns.'); ?></p><div class="table-responsive"><table class="table table-striped table-condensed" id="rc-alert-history-table"><thead><tr><th><?php echo _('ID'); ?></th><th><?php echo _('Time'); ?></th><th><?php echo _('Rule'); ?></th><th><?php echo _('Mode'); ?></th><th><?php echo _('Subject'); ?></th><th><?php echo _('Event'); ?></th><th><?php echo _('Action'); ?></th><th><?php echo _('Status'); ?></th><th><?php echo _('Stage'); ?></th><th><?php echo _('Success'); ?></th><th><?php echo _('Failure Detail'); ?></th></tr></thead><tbody></tbody></table></div></div></div></div>
 	</div>
 
 	<script>

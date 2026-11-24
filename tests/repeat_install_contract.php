@@ -766,8 +766,8 @@ foreach ($legacyContexts as $legacyContext) {
 		$migratedInstructions[] = [$legacyContext, $entry['extension'], $entry['label'], $entry['command']->arguments[0]];
 	}
 }
-assert_same(32, count($migratedInstructions), 'all supported legacy launch and playback instructions must be generated through BMO');
-assert_same('828e702fcb3d54b7916c849617fb9433f5774f6c64c828cef0b6b84ed8265c0b', hash('sha256', json_encode($migratedInstructions, JSON_UNESCAPED_SLASHES)), 'migration must preserve every supported launch and playback extension, label, application and argument');
+assert_same(33, count($migratedInstructions), 'all supported legacy launch and playback instructions plus ownership-guarded cleanup registration must be generated through BMO');
+assert_same('4c6b195080e689729d05a2a931c5d5aa39efb54e7dbdaabda1828b4b9d4931ab', hash('sha256', json_encode($migratedInstructions, JSON_UNESCAPED_SLASHES)), 'migration must preserve every supported launch and playback extension, label, application and argument plus cleanup registration');
 assert_true(strpos($controllerSource, 'repeatcaller-alert-accept-check') === false, 'generated dialplan must not retain calls to the undefined legacy acceptance-check subroutine');
 $launchApplications = array_map(static function (array $entry): string { return $entry['command']->arguments[0]; }, $callerNameDialplan->contexts['repeatcaller-alert-launch']);
 assert_same('Gosub(repeatcaller-alert-origin-name,s,1(internal))', $launchApplications[3], 'originating name must be established before the normal destination Dial');
@@ -983,6 +983,334 @@ assert_true($uninstallSource !== false, 'uninstall.php should be readable');
 assert_true(strpos($uninstallSource, 'Repeatcaller::removeLegacyAlertCallDialplan(') !== false, 'uninstall must share the selective upgrade cleanup');
 assert_true(strpos($uninstallSource, 'file_put_contents(') === false && strpos($uninstallSource, 'unlink($customPath)') === false, 'uninstall must not rewrite or delete administrator custom dialplan itself');
 $legacyBlock = "; Repeat Caller managed include\n#include repeatcaller_alert.conf\n; End Repeat Caller managed include\n";
+
+final class RepeatcallerShortWriteStream {
+	public static string $data = '';
+	public static int $writeLimit = 2;
+	public static ?int $failOnWrite = null;
+	public static int $writes = 0;
+
+	public static function reset(): void {
+		self::$data = '';
+		self::$writeLimit = 2;
+		self::$failOnWrite = null;
+		self::$writes = 0;
+	}
+
+	public function stream_open($path, $mode, $options, &$openedPath): bool {
+		return true;
+	}
+
+	public function stream_write($data): int {
+		self::$writes++;
+		if (self::$failOnWrite !== null && self::$writes >= self::$failOnWrite) {
+			return 0;
+		}
+		$length = min(self::$writeLimit, strlen($data));
+		self::$data .= substr($data, 0, $length);
+		return $length;
+	}
+
+	public function stream_flush(): bool {
+		return true;
+	}
+
+	public function stream_eof(): bool {
+		return true;
+	}
+
+	public function url_stat($path, $flags): array {
+		return [];
+	}
+}
+
+assert_true(stream_wrapper_register('repeatcaller-short-write', RepeatcallerShortWriteStream::class), 'short-write contract must register its isolated stream wrapper');
+$writeAll = new ReflectionMethod(Repeatcaller::class, 'writeLegacyDialplanAll');
+$writeAll->setAccessible(true);
+RepeatcallerShortWriteStream::reset();
+$shortWriteHandle = fopen('repeatcaller-short-write://complete', 'w+b');
+assert_true(is_resource($shortWriteHandle), 'short-write wrapper must open for the write-all contract');
+assert_true($writeAll->invoke(null, $shortWriteHandle, 'complete write'), 'positive short writes must be retried until the entire value is written');
+assert_same('complete write', RepeatcallerShortWriteStream::$data, 'positive short writes must preserve every byte in order');
+fclose($shortWriteHandle);
+RepeatcallerShortWriteStream::reset();
+RepeatcallerShortWriteStream::$failOnWrite = 3;
+$interruptedWriteHandle = fopen('repeatcaller-short-write://interrupted', 'w+b');
+assert_true(is_resource($interruptedWriteHandle), 'interrupted-write wrapper must open for the write-all contract');
+assert_true(!$writeAll->invoke(null, $interruptedWriteHandle, 'interrupted write'), 'a zero-byte interrupted write must be reported instead of accepted as success');
+assert_true(RepeatcallerShortWriteStream::$data !== 'interrupted write', 'an interrupted write must not be mistaken for a complete temporary file');
+fclose($interruptedWriteHandle);
+stream_wrapper_unregister('repeatcaller-short-write');
+
+$atomicLegacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_atomic_' . uniqid('', true);
+assert_true(mkdir($atomicLegacyDirectory), 'atomic legacy cleanup fixture directory must be created');
+$atomicCustomPath = $atomicLegacyDirectory . '/extensions_custom.conf';
+$atomicFragmentPath = $atomicLegacyDirectory . '/repeatcaller_alert.conf';
+$atomicBefore = "; administrator before\n" . $legacyBlock . "[administrator-after]\n same => n,NoOp(keep exactly)\n";
+$atomicAfter = "; administrator before\n[administrator-after]\n same => n,NoOp(keep exactly)\n";
+file_put_contents($atomicCustomPath, $atomicBefore);
+file_put_contents($atomicFragmentPath, 'legacy module fragment');
+chmod($atomicCustomPath, 0640);
+$atomicOriginalStat = stat($atomicCustomPath);
+try {
+	Repeatcaller::assertLegacyAlertCallDialplanSafe($atomicLegacyDirectory);
+	file_put_contents($atomicCustomPath, $atomicBefore);
+	chmod($atomicCustomPath, 0640);
+	clearstatcache(true, $atomicCustomPath);
+	$atomicOriginalStat = stat($atomicCustomPath);
+	Repeatcaller::removeLegacyAlertCallDialplan($atomicLegacyDirectory);
+	clearstatcache(true, $atomicCustomPath);
+	$atomicUpdatedStat = stat($atomicCustomPath);
+	assert_same($atomicAfter, file_get_contents($atomicCustomPath), 'atomic cleanup must preserve every administrator byte outside the exact managed block');
+	assert_true($atomicUpdatedStat['ino'] !== $atomicOriginalStat['ino'], 'managed cleanup must replace the administrator file atomically rather than truncate it in place');
+	assert_same($atomicOriginalStat['mode'], $atomicUpdatedStat['mode'], 'atomic cleanup must preserve extensions_custom.conf permissions');
+	assert_same($atomicOriginalStat['uid'], $atomicUpdatedStat['uid'], 'atomic cleanup must preserve extensions_custom.conf ownership');
+	assert_same($atomicOriginalStat['gid'], $atomicUpdatedStat['gid'], 'atomic cleanup must preserve extensions_custom.conf group ownership');
+	assert_same([], glob($atomicLegacyDirectory . '/.repeatcaller-dialplan-*') ?: [], 'atomic cleanup must remove its temporary file');
+	assert_true(!file_exists($atomicFragmentPath), 'atomic custom-file success must precede legacy fragment deletion');
+	Repeatcaller::removeLegacyAlertCallDialplan($atomicLegacyDirectory);
+	clearstatcache(true, $atomicCustomPath);
+	assert_same($atomicUpdatedStat['ino'], stat($atomicCustomPath)['ino'], 'repeated cleanup must not replace an already-clean administrator file');
+} finally {
+	foreach (glob($atomicLegacyDirectory . '/*') ?: [] as $atomicFile) {
+		unlink($atomicFile);
+	}
+	foreach (glob($atomicLegacyDirectory . '/.*') ?: [] as $atomicHiddenFile) {
+		if (!in_array(basename($atomicHiddenFile), ['.', '..'], true) && file_exists($atomicHiddenFile)) {
+			unlink($atomicHiddenFile);
+		}
+	}
+	rmdir($atomicLegacyDirectory);
+}
+
+$concurrentLegacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_concurrent_' . uniqid('', true);
+assert_true(mkdir($concurrentLegacyDirectory), 'concurrent cleanup fixture directory must be created');
+$concurrentCustomPath = $concurrentLegacyDirectory . '/extensions_custom.conf';
+$concurrentSavedPath = $concurrentLegacyDirectory . '/extensions_custom.saved';
+$concurrentFragmentPath = $concurrentLegacyDirectory . '/repeatcaller_alert.conf';
+$concurrentBefore = $legacyBlock . "; original administrator bytes\n";
+$concurrentUpdated = "; original administrator bytes\n";
+$concurrentReplacement = "; concurrent administrator edit\n";
+file_put_contents($concurrentCustomPath, $concurrentBefore);
+file_put_contents($concurrentFragmentPath, 'legacy module fragment');
+$concurrentHandle = fopen($concurrentCustomPath, 'r+b');
+assert_true(is_resource($concurrentHandle) && flock($concurrentHandle, LOCK_EX), 'concurrent cleanup fixture must lock the inspected administrator file');
+assert_true(rename($concurrentCustomPath, $concurrentSavedPath), 'concurrent cleanup fixture must move the inspected path');
+file_put_contents($concurrentCustomPath, $concurrentReplacement);
+$atomicReplace = new ReflectionMethod(Repeatcaller::class, 'replaceLegacyDialplanFileAtomically');
+$atomicReplace->setAccessible(true);
+$concurrentException = null;
+try {
+	try {
+		$atomicReplace->invoke(null, $concurrentHandle, $concurrentCustomPath, $concurrentBefore, $concurrentUpdated);
+	} catch (Throwable $e) {
+		$concurrentException = $e;
+	}
+	assert_true($concurrentException instanceof RuntimeException, 'replacement must fail if the administrator file changes after inspection');
+	assert_same($concurrentReplacement, file_get_contents($concurrentCustomPath), 'concurrent administrator replacement must remain byte-for-byte unchanged');
+	assert_same($concurrentBefore, file_get_contents($concurrentSavedPath), 'the originally inspected file must also remain unchanged after a race');
+	assert_same('legacy module fragment', file_get_contents($concurrentFragmentPath), 'a concurrent-change failure must retain the legacy fragment for retry');
+	assert_same([], glob($concurrentLegacyDirectory . '/.repeatcaller-dialplan-*') ?: [], 'a concurrent-change failure must remove its temporary file');
+} finally {
+	flock($concurrentHandle, LOCK_UN);
+	fclose($concurrentHandle);
+}
+unlink($concurrentSavedPath);
+Repeatcaller::removeLegacyAlertCallDialplan($concurrentLegacyDirectory);
+assert_same($concurrentReplacement, file_get_contents($concurrentCustomPath), 'retry after a concurrent change must preserve the new administrator content');
+assert_true(!file_exists($concurrentFragmentPath), 'retry after a concurrent change must complete fragment cleanup');
+unlink($concurrentCustomPath);
+rmdir($concurrentLegacyDirectory);
+
+$originalEffectiveUser = function_exists('posix_geteuid') ? posix_geteuid() : null;
+$readOnlyNoopDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_readonly_noop_' . uniqid('', true);
+assert_true(mkdir($readOnlyNoopDirectory), 'read-only no-op cleanup fixture directory must be created');
+$readOnlyNoopCustomPath = $readOnlyNoopDirectory . '/extensions_custom.conf';
+$readOnlyNoopContent = "; administrator configuration only\n";
+file_put_contents($readOnlyNoopCustomPath, $readOnlyNoopContent);
+chmod($readOnlyNoopCustomPath, 0444);
+clearstatcache(true, $readOnlyNoopCustomPath);
+$readOnlyNoopStat = stat($readOnlyNoopCustomPath);
+$readOnlyNoopException = null;
+try {
+	if ($originalEffectiveUser === 0 && function_exists('posix_seteuid')) {
+		assert_true(posix_seteuid(65534), 'read-only no-op contract must switch to an unprivileged effective user');
+	}
+	try {
+		Repeatcaller::removeLegacyAlertCallDialplan($readOnlyNoopDirectory);
+		Repeatcaller::removeLegacyAlertCallDialplan($readOnlyNoopDirectory);
+	} catch (RuntimeException $e) {
+		$readOnlyNoopException = $e;
+	}
+} finally {
+	if ($originalEffectiveUser === 0 && function_exists('posix_seteuid')) {
+		assert_true(posix_seteuid(0), 'read-only no-op contract must restore the original effective user');
+	}
+}
+assert_same(null, $readOnlyNoopException, 'a readable non-writable administrator file with no module work must allow no-op cleanup');
+assert_same($readOnlyNoopContent, file_get_contents($readOnlyNoopCustomPath), 'read-only no-op cleanup must preserve every administrator byte');
+clearstatcache(true, $readOnlyNoopCustomPath);
+assert_same($readOnlyNoopStat['ino'], stat($readOnlyNoopCustomPath)['ino'], 'repeated read-only no-op cleanup must not replace the administrator file');
+unlink($readOnlyNoopCustomPath);
+rmdir($readOnlyNoopDirectory);
+
+$readOnlyFragmentDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_readonly_fragment_' . uniqid('', true);
+assert_true(mkdir($readOnlyFragmentDirectory, 0777), 'read-only fragment cleanup fixture directory must be created');
+chmod($readOnlyFragmentDirectory, 0777);
+$readOnlyFragmentCustomPath = $readOnlyFragmentDirectory . '/extensions_custom.conf';
+$readOnlyFragmentPath = $readOnlyFragmentDirectory . '/repeatcaller_alert.conf';
+$readOnlyFragmentContent = "; administrator configuration without a Repeat Caller reference\n";
+file_put_contents($readOnlyFragmentCustomPath, $readOnlyFragmentContent);
+file_put_contents($readOnlyFragmentPath, 'obsolete legacy module fragment');
+chmod($readOnlyFragmentCustomPath, 0444);
+chmod($readOnlyFragmentPath, 0444);
+clearstatcache(true, $readOnlyFragmentCustomPath);
+$readOnlyFragmentStat = stat($readOnlyFragmentCustomPath);
+$readOnlyFragmentException = null;
+try {
+	if ($originalEffectiveUser === 0 && function_exists('posix_seteuid')) {
+		assert_true(posix_seteuid(65534), 'read-only fragment contract must switch to an unprivileged effective user');
+	}
+	try {
+		Repeatcaller::removeLegacyAlertCallDialplan($readOnlyFragmentDirectory);
+		Repeatcaller::removeLegacyAlertCallDialplan($readOnlyFragmentDirectory);
+	} catch (RuntimeException $e) {
+		$readOnlyFragmentException = $e;
+	}
+} finally {
+	if ($originalEffectiveUser === 0 && function_exists('posix_seteuid')) {
+		assert_true(posix_seteuid(0), 'read-only fragment contract must restore the original effective user');
+	}
+}
+assert_same(null, $readOnlyFragmentException, 'an obsolete fragment must be removable without write access to an unchanged administrator file');
+assert_true(!file_exists($readOnlyFragmentPath), 'read-only fragment cleanup must remove the obsolete module fragment');
+assert_same($readOnlyFragmentContent, file_get_contents($readOnlyFragmentCustomPath), 'fragment-only cleanup must preserve the read-only administrator file byte-for-byte');
+clearstatcache(true, $readOnlyFragmentCustomPath);
+assert_same($readOnlyFragmentStat['ino'], stat($readOnlyFragmentCustomPath)['ino'], 'fragment-only cleanup must not replace the administrator file');
+unlink($readOnlyFragmentCustomPath);
+rmdir($readOnlyFragmentDirectory);
+
+$permissionLegacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_permission_' . uniqid('', true);
+assert_true(mkdir($permissionLegacyDirectory), 'permission-failure cleanup fixture directory must be created');
+$permissionCustomPath = $permissionLegacyDirectory . '/extensions_custom.conf';
+$permissionFragmentPath = $permissionLegacyDirectory . '/repeatcaller_alert.conf';
+$permissionBefore = "; administrator\n" . $legacyBlock;
+file_put_contents($permissionCustomPath, $permissionBefore);
+file_put_contents($permissionFragmentPath, 'legacy module fragment');
+chmod($permissionCustomPath, 0444);
+clearstatcache(true, $permissionCustomPath);
+$permissionOriginalStat = stat($permissionCustomPath);
+$permissionException = null;
+try {
+	if ($originalEffectiveUser === 0 && function_exists('posix_seteuid')) {
+		assert_true(posix_seteuid(65534), 'permission contract must switch to an unprivileged effective user');
+	}
+	try {
+		Repeatcaller::removeLegacyAlertCallDialplan($permissionLegacyDirectory);
+	} catch (RuntimeException $e) {
+		$permissionException = $e;
+	}
+} finally {
+	if ($originalEffectiveUser === 0 && function_exists('posix_seteuid')) {
+		assert_true(posix_seteuid(0), 'permission contract must restore the original effective user');
+	}
+}
+assert_true($permissionException instanceof RuntimeException, 'cleanup must reject a read-only administrator file when managed-block removal requires replacement');
+assert_same($permissionBefore, file_get_contents($permissionCustomPath), 'permission failure must preserve the complete administrator file');
+clearstatcache(true, $permissionCustomPath);
+assert_same($permissionOriginalStat['ino'], stat($permissionCustomPath)['ino'], 'permission failure must not replace the administrator file');
+assert_same('legacy module fragment', file_get_contents($permissionFragmentPath), 'permission failure must retain the legacy fragment for retry');
+chmod($permissionCustomPath, 0644);
+Repeatcaller::removeLegacyAlertCallDialplan($permissionLegacyDirectory);
+assert_true(!file_exists($permissionFragmentPath), 'cleanup must recover after a permission failure is resolved');
+unlink($permissionCustomPath);
+rmdir($permissionLegacyDirectory);
+
+if ($originalEffectiveUser === 0 && function_exists('posix_seteuid')) {
+	$tempFailureDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_temp_' . uniqid('', true);
+	assert_true(mkdir($tempFailureDirectory, 0555), 'same-directory temporary-file failure fixture must be created');
+	$tempFailureCustomPath = $tempFailureDirectory . '/extensions_custom.conf';
+	$tempFailureFragmentPath = $tempFailureDirectory . '/repeatcaller_alert.conf';
+	$tempFailureBefore = "; administrator\n" . $legacyBlock;
+	file_put_contents($tempFailureCustomPath, $tempFailureBefore);
+	file_put_contents($tempFailureFragmentPath, 'legacy module fragment');
+	chown($tempFailureCustomPath, 65534);
+	chmod($tempFailureCustomPath, 0644);
+	$tempFailureException = null;
+	try {
+		assert_true(posix_seteuid(65534), 'temporary-file contract must switch to an unprivileged effective user');
+		try {
+			Repeatcaller::removeLegacyAlertCallDialplan($tempFailureDirectory);
+		} catch (RuntimeException $e) {
+			$tempFailureException = $e;
+		}
+	} finally {
+		assert_true(posix_seteuid(0), 'temporary-file contract must restore the original effective user');
+	}
+	assert_true($tempFailureException instanceof RuntimeException, 'cleanup must fail when a same-directory temporary file cannot be created');
+	assert_same($tempFailureBefore, file_get_contents($tempFailureCustomPath), 'temporary-file creation failure must preserve the original administrator file');
+	assert_same('legacy module fragment', file_get_contents($tempFailureFragmentPath), 'temporary-file creation failure must retain the fragment for retry');
+	assert_same([], glob($tempFailureDirectory . '/.repeatcaller-dialplan-*') ?: [], 'temporary-file failure must not leave a cleanup temp file in the configuration directory');
+	chmod($tempFailureDirectory, 0755);
+	unlink($tempFailureCustomPath);
+	unlink($tempFailureFragmentPath);
+	rmdir($tempFailureDirectory);
+}
+
+$interruptedLegacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_interrupted_' . uniqid('', true);
+assert_true(mkdir($interruptedLegacyDirectory), 'interrupted cleanup fixture directory must be created');
+$interruptedCustomPath = $interruptedLegacyDirectory . '/extensions_custom.conf';
+$interruptedFragmentPath = $interruptedLegacyDirectory . '/repeatcaller_alert.conf';
+file_put_contents($interruptedCustomPath, $legacyBlock . "; administrator retained\n");
+mkdir($interruptedFragmentPath);
+try {
+	try {
+		Repeatcaller::removeLegacyAlertCallDialplan($interruptedLegacyDirectory);
+		$interruptedException = null;
+	} catch (RuntimeException $e) {
+		$interruptedException = $e;
+	}
+	assert_true($interruptedException instanceof RuntimeException, 'fragment removal failure must be visible after the custom-file replacement');
+	assert_same("; administrator retained\n", file_get_contents($interruptedCustomPath), 'an interruption after atomic replacement must retain the successful custom-file cleanup');
+	assert_true(is_dir($interruptedFragmentPath), 'failed fragment deletion must retain the fragment path for a recoverable retry');
+	rmdir($interruptedFragmentPath);
+	Repeatcaller::removeLegacyAlertCallDialplan($interruptedLegacyDirectory);
+	assert_true(!file_exists($interruptedFragmentPath), 'retry after interrupted fragment deletion must complete cleanup');
+} finally {
+	if (is_dir($interruptedFragmentPath)) {
+		rmdir($interruptedFragmentPath);
+	}
+	foreach (glob($interruptedLegacyDirectory . '/*') ?: [] as $interruptedFile) {
+		unlink($interruptedFile);
+	}
+	rmdir($interruptedLegacyDirectory);
+}
+
+$symlinkLegacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_symlink_' . uniqid('', true);
+assert_true(mkdir($symlinkLegacyDirectory), 'symlink cleanup fixture directory must be created');
+$symlinkTargetPath = $symlinkLegacyDirectory . '/administrator-real.conf';
+$symlinkCustomPath = $symlinkLegacyDirectory . '/extensions_custom.conf';
+$symlinkFragmentPath = $symlinkLegacyDirectory . '/repeatcaller_alert.conf';
+file_put_contents($symlinkTargetPath, $legacyBlock);
+file_put_contents($symlinkFragmentPath, 'legacy module fragment');
+assert_true(symlink($symlinkTargetPath, $symlinkCustomPath), 'symlink fixture must be created');
+try {
+	$symlinkException = null;
+	try {
+		Repeatcaller::removeLegacyAlertCallDialplan($symlinkLegacyDirectory);
+	} catch (RuntimeException $e) {
+		$symlinkException = $e;
+	}
+	assert_true($symlinkException instanceof RuntimeException, 'cleanup must refuse to replace a symlinked extensions_custom.conf');
+	assert_same($legacyBlock, file_get_contents($symlinkTargetPath), 'symlink refusal must preserve the administrator target byte-for-byte');
+	assert_same('legacy module fragment', file_get_contents($symlinkFragmentPath), 'symlink refusal must retain the legacy fragment');
+} finally {
+	unlink($symlinkCustomPath);
+	unlink($symlinkTargetPath);
+	unlink($symlinkFragmentPath);
+	rmdir($symlinkLegacyDirectory);
+}
+
 $cleanLegacyDirectory = sys_get_temp_dir() . '/repeatcaller_legacy_clean_' . uniqid('', true);
 assert_true(mkdir($cleanLegacyDirectory), 'clean install preflight fixture directory must be created');
 try {
